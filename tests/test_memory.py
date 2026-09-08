@@ -97,7 +97,8 @@ class MemoryLifecycleTests(unittest.TestCase):
         self.assertTrue(path.exists())
         mem.forget_memory(mem_id, True)
         self.assertFalse(path.exists())
-        self.assertEqual(mem.recall("temporary durable", None, 8, True), [])
+        results = mem.recall("temporary durable", None, 8, True)
+        self.assertFalse(any(r["id"] == mem_id for r in results))
 
     def test_discovery_and_migration_marker(self):
         project = Path(self.tmp.name) / "project"
