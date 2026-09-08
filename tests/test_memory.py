@@ -211,7 +211,7 @@ class NativeMemoryTests(unittest.TestCase):
 
     def test_current_context_and_decisions_are_indexed_in_place(self):
         rows = mem.recall("supervised", workspace="alpha", root=self.root, mode=mem.MODE_NATIVE)
-        paths = {r["path"] for r in rows}
+        paths = {r["path"].replace("\\", "/") for r in rows}
         kinds = {r["kind"] for r in rows}
         self.assertIn("workspaces/alpha/context/CURRENT.md", paths)
         self.assertIn("operator/decisions/log.md", paths)
