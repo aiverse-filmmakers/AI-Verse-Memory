@@ -2,7 +2,12 @@
 set -euo pipefail
 
 TARGET="${AI_VERSE_MEMORY_TARGET:-$PWD}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+SOURCE_REF="${BASH_SOURCE[0]:-}"
+SCRIPT_DIR=""
+
+if [[ -n "$SOURCE_REF" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "$SOURCE_REF")" 2>/dev/null && pwd || true)"
+fi
 
 if command -v python3 >/dev/null 2>&1; then
   PYTHON="python3"
@@ -13,7 +18,10 @@ else
   exit 1
 fi
 
-if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/scripts/install.py" ]]; then
+# Use repository-local sources only when this script is actually being run from
+# an AI-Verse Memory checkout. A piped `curl | bash` has no trustworthy script path.
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/scripts/install.py" && -f "$SCRIPT_DIR/manifest.json" ]] \
+  && grep -q '"name"[[:space:]]*:[[:space:]]*"ai-verse-memory"' "$SCRIPT_DIR/manifest.json" 2>/dev/null; then
   "$PYTHON" "$SCRIPT_DIR/scripts/install.py" --target "$TARGET" --source-dir "$SCRIPT_DIR"
   exit $?
 fi
