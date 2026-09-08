@@ -46,6 +46,9 @@ class MemoryLifecycleTests(unittest.TestCase):
         rows = mem.recall("cinematic images", "project:test", 8, False)
         self.assertTrue(any(r["id"] == first_id for r in rows))
 
+        unrelated = mem.recall("quantum submarine accounting", "project:test", 8, False)
+        self.assertEqual(unrelated, [])
+
         db = mem.paths()["db"]
         db.unlink()
         count = mem.rebuild(silent=True)
@@ -84,6 +87,17 @@ class MemoryLifecycleTests(unittest.TestCase):
 
         history = mem.recall("workflow", "project:test", 8, True)
         self.assertTrue(any(r["id"] == old_id for r in history))
+
+    def test_forget_deletes_canonical_memory(self):
+        mem_id, path, _ = mem.write_atomic(
+            text="Temporary durable test memory",
+            mem_type="fact",
+            source="unit-test",
+        )
+        self.assertTrue(path.exists())
+        mem.forget_memory(mem_id, True)
+        self.assertFalse(path.exists())
+        self.assertEqual(mem.recall("temporary durable", None, 8, True), [])
 
     def test_discovery_and_migration_marker(self):
         project = Path(self.tmp.name) / "project"
