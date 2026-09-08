@@ -6,12 +6,21 @@ AI-Verse Memory is designed to drop into an existing Agent-OS style repository a
 
 The design deliberately keeps the system small:
 
-- **Markdown is canonical.** Memory remains human-readable, portable, editable, and Git-friendly.
+- **Markdown is canonical.** Memory remains human-readable, portable, editable, and easy to inspect.
 - **SQLite FTS5 is only an index.** It can be deleted and rebuilt from Markdown at any time.
 - **No second AI provider.** The agent you already use does the reasoning needed to decide what is worth remembering.
 - **Recall is scoped.** The agent retrieves a small set of relevant memories instead of loading the whole brain.
 - **History is preserved.** Changed facts are superseded rather than silently overwritten.
 - **Old knowledge can be migrated.** Existing Agent-OS context, notes, decisions, and transcripts can be distilled into the same structure.
+- **Personal memory is local by default.** The installer Git-ignores `.ai-verse-memory/` to reduce accidental exposure in public repositories.
+
+## Requirements
+
+- Python 3.9+
+- macOS, Linux, or Windows
+- an existing Agent-OS/workspace using Claude Code, Codex, Hermes, or another file-aware agent
+
+Normal memory use is offline. Network access is only needed to download/install the package initially.
 
 ## Memory model
 
@@ -44,7 +53,7 @@ Bad candidates:
 
 - transient chatter
 - one-off tool output
-- guesses
+- guesses presented as facts
 - secrets unless the user explicitly wants them stored
 - duplicate information already represented canonically
 - obsolete facts that should instead supersede an earlier memory
@@ -55,6 +64,7 @@ Bad candidates:
 AI-Verse-Memory/
 ├── README.md
 ├── SKILL.md
+├── manifest.json
 ├── LICENSE
 ├── install.sh
 ├── install.ps1
@@ -69,14 +79,20 @@ AI-Verse-Memory/
 │   ├── claude-code.md
 │   ├── codex.md
 │   └── hermes.md
-└── migration/
-    └── MIGRATION.md
+├── migration/
+│   └── MIGRATION.md
+└── tests/
+    └── test_memory.py
 ```
 
 ## What installation creates in a user's Agent-OS
 
 ```text
 .ai-verse-memory/
+├── memory.py
+├── MEMORY-PROTOCOL.md
+├── MIGRATION.md
+├── SCENARIO-TEMPLATE.md
 ├── profile.md
 ├── memories/
 │   └── YYYY/
@@ -90,11 +106,20 @@ AI-Verse-Memory/
 
 The `state/memory.db` file is derived data. The Markdown files are the real memory.
 
+The installer also installs the reusable skill into:
+
+```text
+.claude/skills/ai-verse-memory/SKILL.md
+.agents/skills/ai-verse-memory/SKILL.md
+```
+
+If Hermes is detected, it also installs the skill into the user's Hermes skills directory.
+
 ## Quick install
 
-### macOS / Linux
+Run the installer **from inside the Agent-OS repository you want to give memory to**.
 
-From inside the Agent-OS repository:
+### macOS / Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main/install.sh | bash
@@ -106,12 +131,23 @@ curl -fsSL https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/
 irm https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main/install.ps1 | iex
 ```
 
-The installer is intentionally conservative. It creates the memory folder, copies the memory skill and protocol, installs the dependency-free Python helper, and prints the small integration block that should be added to the agent's standing instructions.
+Installation:
+
+1. creates the local memory runtime;
+2. installs the skill for Claude and Codex;
+3. installs the Hermes skill when Hermes is detected;
+4. adds one idempotent standing-memory block to `CLAUDE.md` and `AGENTS.md`;
+5. initializes the Markdown store and SQLite index;
+6. runs a health check;
+7. Git-ignores the personal runtime memory by default.
+
+After that, agents know to recall relevant memory before substantial work and capture only durable information afterward.
 
 ## Core commands
 
 ```bash
 python .ai-verse-memory/memory.py doctor
+python .ai-verse-memory/memory.py status
 python .ai-verse-memory/memory.py remember --type preference --text "Prefer concise project updates"
 python .ai-verse-memory/memory.py recall "how should project updates be written"
 python .ai-verse-memory/memory.py supersede <old-id> --text "Updated preference"
@@ -121,9 +157,13 @@ python .ai-verse-memory/memory.py discover .
 
 Agents normally call these commands for the user. The user should not need to manage the index manually.
 
-## First-run migration
+## First-run migration for existing Agent-OS data
 
-After installation, the agent should run the migration workflow in `migration/MIGRATION.md` once if the repository already contains useful context.
+If the repository already contains useful historical context, ask the connected agent:
+
+> Run the AI-Verse Memory initial migration for this repository.
+
+The agent follows `.ai-verse-memory/MIGRATION.md`.
 
 The migration does **not** blindly copy every old file into memory. It:
 
@@ -133,14 +173,41 @@ The migration does **not** blindly copy every old file into memory. It:
 4. deduplicates against memories already created;
 5. marks conflicts and superseded facts correctly;
 6. creates scenario summaries for mature projects;
-7. rebuilds the local index;
-8. produces a migration report for review.
+7. flags strong workflow memories that may deserve promotion into real skills;
+8. rebuilds the local index;
+9. produces a migration report for review.
 
 The existing connected agent performs the extraction. AI-Verse Memory does not require another model or API.
 
+## Privacy and Git
+
+The installer adds:
+
+```gitignore
+.ai-verse-memory/
+```
+
+by default. This is deliberate because persistent memory can contain personal or business context.
+
+The reusable skill files and the standing instructions remain outside that directory and can still be committed into an Agent-OS template.
+
+If a user deliberately wants to sync memory across devices, they can change that Git policy themselves, ideally only in a private repository.
+
 ## Design boundary
 
-AI-Verse Memory is intentionally **not** a vector database, RAG platform, team memory server, transcript warehouse, or knowledge graph product. Those can be optional future adapters. The core stays useful on a normal laptop with Python and SQLite.
+AI-Verse Memory is intentionally **not** a vector database, RAG platform, team memory server, transcript warehouse, or knowledge graph product. Those can become optional future adapters. The core stays useful on a normal laptop with Python and SQLite.
+
+## Design influences
+
+The architecture borrows ideas, not code, from several memory/context systems:
+
+- Context Mode: lightweight session continuity and local lexical indexing
+- OpenViking: progressive context disclosure and scoped retrieval
+- TencentDB Agent Memory: atomic memories, scenario context, profile layers, and workflow promotion
+- MemPalace: provenance, historical validity, and preserving changes over time
+- Obsidian's plugin ecosystem: small installable/versioned package philosophy
+
+AI-Verse Memory keeps those useful principles while intentionally leaving out their heavier infrastructure.
 
 ## License
 
