@@ -94,9 +94,9 @@ class MemoryLifecycleTests(unittest.TestCase):
         report = self.home / "state" / "discovery.md"
 
         found = mem.discover(project, report, 50)
-        paths = [p for p, _, _ in found]
-        self.assertIn(project / "context" / "preferences.md", paths)
-        self.assertNotIn(project / "node_modules" / "noise.md", paths)
+        paths = {p.resolve() for p, _, _ in found}
+        self.assertIn((project / "context" / "preferences.md").resolve(), paths)
+        self.assertNotIn((project / "node_modules" / "noise.md").resolve(), paths)
         self.assertTrue(report.exists())
 
         mem.migration_complete("unit test")
