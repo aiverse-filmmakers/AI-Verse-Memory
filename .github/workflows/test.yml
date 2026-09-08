@@ -22,3 +22,54 @@ jobs:
         run: python -m py_compile scripts/memory.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+
+  installer-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Shell syntax
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash -n install.sh
+
+      - name: PowerShell syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+
+      - name: Install twice on Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          target="$(mktemp -d)"
+          AI_VERSE_MEMORY_TARGET="$target" bash install.sh
+          AI_VERSE_MEMORY_TARGET="$target" bash install.sh
+          test "$(grep -c 'AI-VERSE-MEMORY:START' "$target/CLAUDE.md")" -eq 1
+          test "$(grep -c 'AI-VERSE-MEMORY:START' "$target/AGENTS.md")" -eq 1
+          python "$target/.ai-verse-memory/memory.py" doctor
+
+      - name: Install twice on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP "ai-verse-memory-smoke"
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          $env:AI_VERSE_MEMORY_TARGET = $target
+          & ./install.ps1
+          & ./install.ps1
+          $claudeCount = (Select-String -Path (Join-Path $target "CLAUDE.md") -Pattern "AI-VERSE-MEMORY:START").Count
+          $agentsCount = (Select-String -Path (Join-Path $target "AGENTS.md") -Pattern "AI-VERSE-MEMORY:START").Count
+          if ($claudeCount -ne 1 -or $agentsCount -ne 1) { throw "Installer is not idempotent" }
+          python (Join-Path $target ".ai-verse-memory\memory.py") doctor
