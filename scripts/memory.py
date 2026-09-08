@@ -374,11 +374,24 @@ def parse_dt(value: str) -> Optional[datetime]:
         return None
 
 
-def custom_score(row: sqlite3.Row, query: str, scope: Optional[str]) -> float:
-    q = set(tokenize(query))
-    hay = " ".join(
+def row_haystack(row: sqlite3.Row) -> str:
+    return " ".join(
         [row["text"] or "", row["why"] or "", row["tags"] or "", row["type"] or "", row["scope"] or ""]
     ).lower()
+
+
+def row_matches_query(row: sqlite3.Row, query: str) -> bool:
+    terms = set(tokenize(query))
+    if not terms:
+        return False
+    hay = row_haystack(row)
+    words = set(tokenize(hay))
+    return bool(terms & words) or query.strip().lower() in hay
+
+
+def custom_score(row: sqlite3.Row, query: str, scope: Optional[str]) -> float:
+    q = set(tokenize(query))
+    hay = row_haystack(row)
     words = set(tokenize(hay))
     overlap = len(q & words)
     score = overlap * 2.0
@@ -416,6 +429,7 @@ def recall(query: str, scope: Optional[str], limit: int, include_history: bool) 
 
     candidates: List[sqlite3.Row] = []
     terms = tokenize(query)
+    used_fts = False
     if fts and terms:
         fts_query = " OR ".join(f'"{t.replace(chr(34), "")}"' for t in terms[:12])
         try:
@@ -426,13 +440,20 @@ def recall(query: str, scope: Optional[str], limit: int, include_history: bool) 
                 LIMIT 100
             """
             candidates = conn.execute(sql, [fts_query] + params).fetchall()
+            used_fts = True
         except sqlite3.OperationalError:
-            candidates = []
+            used_fts = False
 
-    if not candidates:
-        sql = f"SELECT i.* FROM items i WHERE 1=1 {status_clause} {scope_clause} LIMIT 500"
+    if not used_fts:
+        sql = f"""
+            SELECT i.* FROM items i
+            WHERE 1=1 {status_clause} {scope_clause}
+            ORDER BY i.importance DESC, i.updated_at DESC
+            LIMIT 1000
+        """
         candidates = conn.execute(sql, params).fetchall()
 
+    candidates = [row for row in candidates if row_matches_query(row, query)]
     ranked = sorted(candidates, key=lambda r: custom_score(r, query, scope), reverse=True)
     conn.close()
     return ranked[: max(1, min(50, limit))]
@@ -451,6 +472,27 @@ def locate_memory(mem_id: str) -> Optional[Path]:
     p = ensure_layout()
     matches = list(p["memories"].rglob(f"{mem_id}.md"))
     return matches[0] if matches else None
+
+
+def show_memory(mem_id: str) -> None:
+    path = locate_memory(mem_id)
+    if not path:
+        raise SystemExit(f"Memory not found: {mem_id}")
+    print(path.read_text(encoding="utf-8", errors="replace"))
+    print(f"\nPath: {relpath(path)}")
+
+
+def forget_memory(mem_id: str, confirmed: bool) -> None:
+    path = locate_memory(mem_id)
+    if not path:
+        raise SystemExit(f"Memory not found: {mem_id}")
+    if not confirmed:
+        raise SystemExit(
+            f"Refusing to delete {mem_id} without --yes. This removes the canonical Markdown memory."
+        )
+    path.unlink()
+    rebuild(silent=True)
+    print(f"Forgot: {mem_id}")
 
 
 def supersede(args: argparse.Namespace) -> None:
@@ -676,6 +718,13 @@ def build_parser() -> argparse.ArgumentParser:
     recall_p.add_argument("--limit", type=int, default=8)
     recall_p.add_argument("--include-history", action="store_true")
 
+    show_p = sub.add_parser("show", help="Show one canonical atomic memory")
+    show_p.add_argument("id")
+
+    forget_p = sub.add_parser("forget", help="Permanently delete one canonical atomic memory")
+    forget_p.add_argument("id")
+    forget_p.add_argument("--yes", action="store_true", help="Confirm permanent deletion")
+
     supersede_p = sub.add_parser("supersede", help="Replace an old memory while preserving history")
     supersede_p.add_argument("id")
     supersede_p.add_argument("--text", required=True)
@@ -734,6 +783,10 @@ def main() -> int:
         elif args.command == "recall":
             rows = recall(args.query, args.scope, args.limit, args.include_history)
             print_recall(rows, args.query, args.scope)
+        elif args.command == "show":
+            show_memory(args.id)
+        elif args.command == "forget":
+            forget_memory(args.id, args.yes)
         elif args.command == "supersede":
             supersede(args)
         elif args.command == "discover":
