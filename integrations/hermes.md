@@ -1,43 +1,28 @@
 # Hermes Integration
 
-Hermes supports `SKILL.md` skills and keeps user-installed skills under `~/.hermes/skills/`.
+AI-Verse Memory can install its skill into the user-local Hermes skill directory when Hermes is detected.
 
-AI-Verse Memory does **not** replace Hermes itself or require Hermes to run a second memory provider. The skill simply teaches Hermes to use the same `.ai-verse-memory/` store as Claude Code and Codex when working inside the Agent-OS repository.
+Hermes should still operate the memory engine from the repository it is working in.
 
-## Install the skill
+## AI-Verse OS v2 native mode
 
-Copy `SKILL.md` to:
-
-```text
-~/.hermes/skills/ai-verse/ai-verse-memory/SKILL.md
-```
-
-The shell installer does this automatically when it detects a Hermes installation.
-
-Alternatively, Hermes can install a `SKILL.md` from a URL using its normal skills installer.
-
-## Project standing guidance
-
-Keep the AI-Verse Memory standing block in the project's `AGENTS.md`:
-
-```markdown
-<!-- AI-VERSE-MEMORY:START -->
-## Persistent memory
-
-This repository uses AI-Verse Memory. Read `.ai-verse-memory/MEMORY-PROTOCOL.md` and follow it as standing guidance. Before substantial work, recall relevant prior context when it could materially change the task. After meaningful work, persist only durable facts, preferences, constraints, decisions, project state, entity details, experiences, or proven workflows. Supersede outdated memories rather than silently rewriting history.
-<!-- AI-VERSE-MEMORY:END -->
-```
-
-## Verify
-
-From the Agent-OS repository root, ask Hermes to use the `ai-verse-memory` skill, or run:
+Use:
 
 ```bash
-python .ai-verse-memory/memory.py doctor
+python scripts/ai-verse-memory/memory.py mode
+python scripts/ai-verse-memory/memory.py recall "<topic>" --workspace <id>
 ```
 
-Hermes should read and write the exact same local memory files as the other agents.
+Hermes must respect the same workspace isolation and canonical-source rules as Claude and Codex. A Hermes skill does not create a separate memory store.
 
-## Existing data
+## Standalone mode
 
-If the repository already contains useful context, Hermes can perform `.ai-verse-memory/MIGRATION.md` using its currently connected model. No separate embedding model or memory API is required.
+Use:
+
+```bash
+python .ai-verse-memory/memory.py recall "<topic>" --scope <scope>
+```
+
+## Important
+
+The Hermes user-local skill is only an adapter. Repository Markdown remains canonical and SQLite remains a derived index.

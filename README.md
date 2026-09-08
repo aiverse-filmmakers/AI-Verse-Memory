@@ -1,91 +1,110 @@
 # AI-Verse Memory
 
-**A lightweight, local-first persistent memory layer for AI agents. No external database, vector store, memory API, server, Docker stack, or separate embedding model required.**
+**A local-first persistent memory engine for AI agents and AI operating systems. Markdown stays canonical. SQLite is only a rebuildable index.**
 
-AI-Verse Memory is designed to drop into an existing Agent-OS style repository and give Claude Code, Codex, Hermes, and other file-aware agents one shared memory structure.
+AI-Verse Memory v0.2 adds native support for the AI-Verse OS v2 Unified Workspace Architecture while preserving standalone compatibility for other Agent-OS repositories.
 
-The design deliberately keeps the system small:
+## What changed in v0.2
 
-- **Markdown is canonical.** Memory remains human-readable, portable, editable, and easy to inspect.
-- **SQLite FTS5 is only an index.** It can be deleted and rebuilt from Markdown at any time.
-- **No second AI provider.** The agent you already use does the reasoning needed to decide what is worth remembering.
-- **Recall is scoped.** The agent retrieves a small set of relevant memories instead of loading the whole brain.
-- **History is preserved.** Changed facts are superseded rather than silently overwritten.
-- **Old knowledge can be migrated.** Existing Agent-OS context, notes, decisions, and transcripts can be distilled into the same structure.
-- **Personal memory is local by default.** The installer Git-ignores `.ai-verse-memory/` to reduce accidental exposure in public repositories.
+The memory layer no longer assumes it should own the whole profile/project/context structure.
+
+When installed into AI-Verse OS v2, the operating system remains the source of truth and Memory acts as an engine:
+
+- AI-Verse OS defines where operator and workspace truth lives.
+- AI-Verse Memory stores only atomic historical memory in those canonical memory layers.
+- Current profile, context, decisions, and workspace manifests are indexed in place rather than copied.
+- Workspace recall is isolated by default.
+- SQLite lives under `runtime/` as derived state.
+- The installer registers Memory as an OS capability and updates the canonical `AGENTS.md` runtime contract without duplicating standing instructions into `CLAUDE.md`.
+
+If no compatible AI-Verse OS v2 is detected, the original `.ai-verse-memory/` standalone model remains available.
+
+## Design principles
+
+- **One source of truth.** Memory never creates a second canonical profile/context system inside AI-Verse OS v2.
+- **Markdown is canonical.** Human-readable files remain the durable truth.
+- **SQLite is disposable.** Delete the index and rebuild it at any time.
+- **Scoped recall.** Operator and workspace memory stay isolated unless cross-workspace retrieval is explicitly requested.
+- **Current context beats history.** Historical memory cannot silently override current `CURRENT.md`, profile, or decisions.
+- **History stays history.** Changed atomic memories are superseded instead of rewritten.
+- **No extra AI infrastructure.** No vector database, embedding service, cloud memory API, Docker stack, or second LLM is required.
+- **Domain neutral.** Memory understands operator/workspace boundaries, not professions such as filmmaking, medicine, coding, or marketing.
+- **Private by default.** AI-Verse OS v2 already keeps user-owned state and runtime output local by default; standalone mode Git-ignores `.ai-verse-memory/`.
 
 ## Requirements
 
 - Python 3.9+
 - macOS, Linux, or Windows
-- an existing Agent-OS/workspace using Claude Code, Codex, Hermes, or another file-aware agent
+- AI-Verse OS v2 or another file-aware Agent-OS repository
 
-Normal memory use is offline. Network access is only needed to download/install the package initially.
+Normal memory use is offline after installation.
 
-## Memory model
+# Native AI-Verse OS v2 mode
 
-AI-Verse Memory combines a few proven ideas without importing their infrastructure:
+The installer detects this contract:
 
-| Layer | Purpose |
-|---|---|
-| **Evidence** | Optional source reference or excerpt showing where a memory came from. |
-| **Atomic memory** | One durable fact, preference, constraint, decision, entity detail, event, or lesson. |
-| **Scenario** | A compact working view of a project, client, topic, or recurring situation. |
-| **Profile** | Stable high-level context that should be available quickly across sessions. |
-
-Every atomic memory also has metadata for type, scope, importance, confidence, timestamps, provenance, and lifecycle state.
-
-## What gets remembered
-
-Good candidates:
-
-- stable facts
-- preferences
-- constraints
-- meaningful decisions and their reasoning
-- project state that matters later
-- people/entities and relationships
-- important events
-- lessons learned from completed work
-- proven repeatable workflows that may later become skills
-
-Bad candidates:
-
-- transient chatter
-- one-off tool output
-- guesses presented as facts
-- secrets unless the user explicitly wants them stored
-- duplicate information already represented canonically
-- obsolete facts that should instead supersede an earlier memory
-
-## Repository contents
-
-```text
-AI-Verse-Memory/
-├── README.md
-├── SKILL.md
-├── manifest.json
-├── LICENSE
-├── install.sh
-├── install.ps1
-├── protocol/
-│   └── MEMORY-PROTOCOL.md
-├── scripts/
-│   └── memory.py
-├── templates/
-│   ├── profile.md
-│   └── scenario.md
-├── integrations/
-│   ├── claude-code.md
-│   ├── codex.md
-│   └── hermes.md
-├── migration/
-│   └── MIGRATION.md
-└── tests/
-    └── test_memory.py
+```yaml
+schema_version: "2.0"
+architecture: unified-workspace
 ```
 
-## What installation creates in a user's Agent-OS
+plus the `operator/` and `workspaces/` layers.
+
+It then uses:
+
+```text
+AI-Verse-OS/
+├── operator/
+│   ├── profile/                 # canonical profile, indexed in place
+│   ├── context/                 # canonical current context, indexed in place
+│   ├── decisions/               # canonical decisions, indexed in place
+│   └── memory/
+│       └── atomic/              # atomic operator memories
+│
+├── workspaces/
+│   └── <id>/
+│       ├── WORKSPACE.yaml       # indexed in place
+│       ├── context/             # indexed in place
+│       ├── decisions/           # indexed in place
+│       └── memory/
+│           └── atomic/          # atomic workspace memories
+│
+├── runtime/
+│   └── indexes/
+│       └── ai-verse-memory/
+│           └── memory.db        # derived, rebuildable
+│
+├── scripts/
+│   └── ai-verse-memory/
+│       ├── memory.py
+│       ├── MEMORY-PROTOCOL.md
+│       └── MIGRATION.md
+│
+├── .claude/skills/ai-verse-memory/SKILL.md
+└── .agents/skills/ai-verse-memory/SKILL.md
+```
+
+It does **not** create `.ai-verse-memory/profile.md` or a second scenario/project hierarchy.
+
+## Native writeback model
+
+| Information | Canonical home |
+|---|---|
+| stable operator identity/preferences | `operator/profile/` |
+| current operator state | `operator/context/` |
+| historical operator memory | `operator/memory/` |
+| operator decisions | `operator/decisions/` |
+| current workspace state | `workspaces/<id>/context/` |
+| historical workspace memory | `workspaces/<id>/memory/` |
+| workspace decisions | `workspaces/<id>/decisions/` |
+| reusable knowledge | root/workspace `knowledge/` |
+| disposable search index | `runtime/indexes/ai-verse-memory/` |
+
+Memory should store what happened and may matter later. It should not duplicate what is already current canonical truth.
+
+# Standalone compatibility mode
+
+If AI-Verse OS v2 is not detected, installation preserves the original portable structure:
 
 ```text
 .ai-verse-memory/
@@ -95,29 +114,17 @@ AI-Verse-Memory/
 ├── SCENARIO-TEMPLATE.md
 ├── profile.md
 ├── memories/
-│   └── YYYY/
-│       └── MM/
-│           └── <memory-id>.md
 ├── scenarios/
 ├── evidence/
 └── state/
     └── memory.db
 ```
 
-The `state/memory.db` file is derived data. The Markdown files are the real memory.
+This means existing Agent-OS, Claude Code, Codex, and Hermes workflows remain supported.
 
-The installer also installs the reusable skill into:
+# Install
 
-```text
-.claude/skills/ai-verse-memory/SKILL.md
-.agents/skills/ai-verse-memory/SKILL.md
-```
-
-If Hermes is detected, it also installs the skill into the user's Hermes skills directory.
-
-## Quick install
-
-Run the installer **from inside the Agent-OS repository you want to give memory to**.
+Run from the repository you want to give memory to.
 
 ### macOS / Linux
 
@@ -131,83 +138,133 @@ curl -fsSL https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/
 irm https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main/install.ps1 | iex
 ```
 
-Installation:
+The installer is idempotent and automatically selects native AI-Verse OS v2 or standalone mode.
 
-1. creates the local memory runtime;
-2. installs the skill for Claude and Codex;
-3. installs the Hermes skill when Hermes is detected;
-4. adds one idempotent standing-memory block to `CLAUDE.md` and `AGENTS.md`;
-5. initializes the Markdown store and SQLite index;
-6. runs a health check;
-7. Git-ignores the personal runtime memory by default.
+## What native installation does
 
-After that, agents know to recall relevant memory before substantial work and capture only durable information afterward.
+1. installs the neutral memory engine under `scripts/ai-verse-memory/`;
+2. installs matching Claude and Codex skill adapters;
+3. registers `ai-verse-memory` in `skills/registry.yaml` when the expected registry is present;
+4. adds one bounded integration block to canonical `AGENTS.md`;
+5. removes any old AI-Verse Memory standing block from `CLAUDE.md`, because AI-Verse OS v2 treats it as an adapter rather than a second runtime contract;
+6. initializes the derived SQLite index;
+7. runs `doctor`;
+8. leaves any old `.ai-verse-memory/` store untouched and offers a deliberate migration path.
 
-## Core commands
+# Core commands
+
+Native examples:
 
 ```bash
-python .ai-verse-memory/memory.py doctor
-python .ai-verse-memory/memory.py status
-python .ai-verse-memory/memory.py remember --type preference --text "Prefer concise project updates"
-python .ai-verse-memory/memory.py recall "how should project updates be written"
-python .ai-verse-memory/memory.py supersede <old-id> --text "Updated preference"
-python .ai-verse-memory/memory.py rebuild
-python .ai-verse-memory/memory.py discover .
+python scripts/ai-verse-memory/memory.py mode
+python scripts/ai-verse-memory/memory.py doctor
+python scripts/ai-verse-memory/memory.py status
+python scripts/ai-verse-memory/memory.py remember --type experience --scope operator --text "A useful historical lesson"
+python scripts/ai-verse-memory/memory.py remember --type state --workspace example --text "The workspace moved to supervised testing"
+python scripts/ai-verse-memory/memory.py recall "supervised testing" --workspace example
+python scripts/ai-verse-memory/memory.py supersede <memory-id> --text "Updated historical state"
+python scripts/ai-verse-memory/memory.py rebuild
 ```
 
-Agents normally call these commands for the user. The user should not need to manage the index manually.
+Standalone uses the same commands through `.ai-verse-memory/memory.py`.
 
-## First-run migration for existing Agent-OS data
+## Workspace isolation
 
-If the repository already contains useful historical context, ask the connected agent:
+Native recall with:
 
-> Run the AI-Verse Memory initial migration for this repository.
-
-The agent follows `.ai-verse-memory/MIGRATION.md`.
-
-The migration does **not** blindly copy every old file into memory. It:
-
-1. discovers likely historical context sources;
-2. identifies durable facts, preferences, decisions, project state, entities, experiences, and workflows;
-3. preserves provenance;
-4. deduplicates against memories already created;
-5. marks conflicts and superseded facts correctly;
-6. creates scenario summaries for mature projects;
-7. flags strong workflow memories that may deserve promotion into real skills;
-8. rebuilds the local index;
-9. produces a migration report for review.
-
-The existing connected agent performs the extraction. AI-Verse Memory does not require another model or API.
-
-## Privacy and Git
-
-The installer adds:
-
-```gitignore
-.ai-verse-memory/
+```bash
+--workspace example
 ```
 
-by default. This is deliberate because persistent memory can contain personal or business context.
+searches the selected workspace plus operator-level context. It does not search unrelated workspaces.
 
-The reusable skill files and the standing instructions remain outside that directory and can still be committed into an Agent-OS template.
+Cross-workspace search requires the explicit flag:
 
-If a user deliberately wants to sync memory across devices, they can change that Git policy themselves, ideally only in a private repository.
+```bash
+--all-workspaces
+```
 
-## Design boundary
+This is deliberate. Memory follows the same privacy and context-isolation boundary as AI-Verse OS.
 
-AI-Verse Memory is intentionally **not** a vector database, RAG platform, team memory server, transcript warehouse, or knowledge graph product. Those can become optional future adapters. The core stays useful on a normal laptop with Python and SQLite.
+# What is indexed in native mode
 
-## Design influences
+Without copying or replacing the original files, the engine indexes:
 
-The architecture borrows ideas, not code, from several memory/context systems:
+- `operator/profile/*.md`
+- `operator/context/*.md`
+- `operator/decisions/**/*.md`
+- operator memory summaries and atomic memories
+- each `WORKSPACE.yaml`
+- workspace context
+- workspace decisions
+- workspace memory summaries and atomic memories
 
-- Context Mode: lightweight session continuity and local lexical indexing
-- OpenViking: progressive context disclosure and scoped retrieval
-- TencentDB Agent Memory: atomic memories, scenario context, profile layers, and workflow promotion
-- MemPalace: provenance, historical validity, and preserving changes over time
-- Obsidian's plugin ecosystem: small installable/versioned package philosophy
+The full `knowledge/` tree is intentionally not swallowed into the memory index. Deeper knowledge retrieval remains an AI-Verse OS routing responsibility.
 
-AI-Verse Memory keeps those useful principles while intentionally leaving out their heavier infrastructure.
+# Atomic memory model
+
+Atomic memory keeps metadata for:
+
+- `id`
+- `type`
+- `scope`
+- `status`
+- `importance`
+- `confidence`
+- `created_at`
+- `updated_at`
+- `valid_from`
+- `valid_to`
+- `supersedes`
+- `superseded_by`
+- `source`
+- `tags`
+
+Normal recall prefers active entries, exact workspace scope, lexical relevance, importance, confidence, canonical-source authority, and recency.
+
+# Legacy v0.1 migration
+
+If v0.1 was already installed inside AI-Verse OS v2, the v0.2 installer does not delete or silently move it.
+
+Dry run:
+
+```bash
+python scripts/ai-verse-memory/memory.py migrate-legacy
+```
+
+Apply after reviewing the report:
+
+```bash
+python scripts/ai-verse-memory/memory.py migrate-legacy --apply
+```
+
+`global` becomes operator memory. `project:<id>`, `client:<id>`, and `workspace:<id>` move only when a matching v2 workspace exists. Unknown scopes remain unresolved rather than leaking into the wrong workspace.
+
+# Health and QC
+
+```bash
+python scripts/ai-verse-memory/memory.py doctor
+```
+
+Native `doctor` checks storage, SQLite, FTS fallback, rebuildability, workspace isolation, Claude/Codex skill parity, capability registration, canonical AGENTS integration, and a clean Claude adapter.
+
+The repository CI tests Python 3.9 and 3.12 on Linux, macOS, and Windows, plus standalone and AI-Verse OS v2 installer smoke tests.
+
+# Optional future retrieval tiers
+
+The core remains lexical and local. Future semantic or larger-scale backends should be optional derived adapters only:
+
+```text
+Tier 0: SQLite FTS / lexical fallback, always available
+Tier 1: optional local semantic index
+Tier 2: optional larger external index for very large installations
+```
+
+None of those tiers may become the canonical memory store. Markdown remains truth.
+
+# Security
+
+AI-Verse Memory is not a secret manager. Do not automatically persist credentials, tokens, private keys, recovery codes, financial credentials, government identifiers, or other highly sensitive information. See `SECURITY.md`.
 
 ## License
 

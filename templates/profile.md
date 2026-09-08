@@ -1,6 +1,6 @@
 # Memory Profile
 
-> Stable, broadly useful context only. Volatile project details belong in atomic memories or scenarios.
+> Standalone mode template only. AI-Verse OS v2 uses `operator/profile/` as canonical profile storage and does not create this file.
 
 ## Identity and role
 
@@ -20,4 +20,4 @@
 
 ## Notes
 
-Only promote information here after it has proven durable across sessions. Keep source-specific detail in atomic memory files.
+Only promote information here after it has proven durable across sessions. Keep volatile state in atomic memories or scenarios.

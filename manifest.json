@@ -1,16 +1,18 @@
 {
   "name": "ai-verse-memory",
   "display_name": "AI-Verse Memory",
-  "version": "0.1.0",
-  "description": "A lightweight, local-first persistent memory layer for AI agents with no external database, vector store, memory API, server, or separate embedding model required.",
+  "version": "0.2.0",
+  "description": "A local-first persistent memory engine with native AI-Verse OS v2 workspace isolation, canonical-source indexing, provenance, supersession, and rebuildable SQLite recall.",
   "license": "MIT",
   "author": "AI-VERSE",
   "repository": "https://github.com/aiverse-filmmakers/AI-Verse-Memory",
   "entrypoint": "scripts/memory.py",
+  "installer": "scripts/install.py",
   "skill": "SKILL.md",
   "protocol": "protocol/MEMORY-PROTOCOL.md",
   "migration": "migration/MIGRATION.md",
   "supported_agents": ["claude-code", "codex", "hermes"],
+  "integration_modes": ["ai-verse-os-v2", "standalone"],
   "runtime": {
     "python": ">=3.9",
     "external_services": false,
@@ -22,6 +24,9 @@
     "canonical": "markdown",
     "index": "sqlite",
     "index_rebuildable": true,
-    "default_git_policy": "local-private"
+    "native_operator_memory": "operator/memory/atomic/",
+    "native_workspace_memory": "workspaces/<id>/memory/atomic/",
+    "native_index": "runtime/indexes/ai-verse-memory/memory.db",
+    "standalone_home": ".ai-verse-memory/"
   }
 }
