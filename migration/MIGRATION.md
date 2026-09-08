@@ -1,196 +1,89 @@
 # Historical Memory Migration
 
-Run this once after installing AI-Verse Memory into an Agent-OS repository that already contains useful context.
+AI-Verse Memory v0.2 supports two migration paths.
 
-The goal is **not** to move every old file. The goal is to distill durable memory while leaving original sources untouched.
+## A. Existing Agent-OS context into memory
 
-## Principles
-
-- Existing files remain where they are.
-- Migration is additive and reversible.
-- The current connected agent performs the reasoning. No second model/API is required.
-- Preserve source paths or session identifiers as provenance.
-- Prefer atomic memories over giant summaries.
-- Do not duplicate information already represented canonically.
-- If old and new sources disagree, keep the timeline and mark older information superseded when the newer source is clearly authoritative.
-- Do not ingest secrets automatically.
-
-## Phase 1: Discover
-
-From the Agent-OS repository root:
+Use `discover` to find likely historical sources, then let the connected agent distill only durable history.
 
 ```bash
-python .ai-verse-memory/memory.py discover . --output .ai-verse-memory/state/discovery.md
+python <memory-engine> discover . --output <migration-report-path>
 ```
 
-Inspect the highest-priority candidates first. Common useful sources include:
+Do not import every file. Preserve provenance, avoid transient chatter, and do not duplicate information already represented canonically.
 
-- `CLAUDE.md`
-- `AGENTS.md`
-- context/profile folders
-- decision logs
-- project notes
-- client notes
-- reference documents
-- brainstorms
-- archived state
-- prior memory files
-- exported or local agent transcripts
-- README files that encode project assumptions
+In AI-Verse OS v2, current profile/context/decision/knowledge files remain authoritative where they already live. Historical migration should not copy those files wholesale into atomic memory.
 
-Do not assume every discovered file belongs in memory.
+Useful atomic migration candidates include:
 
-## Phase 2: Build a source inventory
+- important past events
+- state transitions
+- lessons from failures or successful work
+- entity history that matters later
+- old constraints that explain later decisions
+- historical facts no longer represented in current context
+- workflow experiences that may later become skills
 
-Create `.ai-verse-memory/state/migration-report.md` and record:
+## B. AI-Verse Memory v0.1 into AI-Verse OS v2
 
-```markdown
-# Migration Report
+If `.ai-verse-memory/` already exists inside an AI-Verse OS v2 repository, use the dedicated migration command.
 
-## Sources reviewed
-- path/to/source.md — reviewed
-
-## Memories created
-- mem-... — preference — source
-
-## Conflicts/supersessions
-- old -> new
-
-## Scenario files created
-- project-x.md
-
-## Sources intentionally not migrated
-- logs/raw-output.txt — transient tool output
-```
-
-This report makes migration auditable without copying all old material.
-
-## Phase 3: Extract durable atomic memories
-
-For each useful source, identify independent durable propositions.
-
-Classify each as one of:
-
-- `fact`
-- `preference`
-- `constraint`
-- `decision`
-- `project_state`
-- `entity`
-- `event`
-- `experience`
-- `workflow`
-
-Use the narrowest meaningful scope:
-
-- `global`
-- `project:<slug>`
-- `entity:<slug>`
-- `client:<slug>`
-- another stable domain prefix when useful
-
-Before adding a candidate, recall similar memory:
+### 1. Dry run
 
 ```bash
-python .ai-verse-memory/memory.py recall "<candidate fact>" --scope <scope>
+python scripts/ai-verse-memory/memory.py migrate-legacy
 ```
 
-If the same memory already exists, do not duplicate it.
+The engine maps:
 
-Create new memories with provenance:
+- `global` -> `operator`
+- `project:<id>` -> `workspace:<id>` only when that workspace exists
+- `client:<id>` -> `workspace:<id>` only when that workspace exists
+- `workspace:<id>` -> the matching workspace
+
+Unknown scopes are reported as unresolved instead of being silently placed in the wrong workspace.
+
+### 2. Review the report
+
+Review `operator/memory/migrations/legacy-ai-verse-memory-migration.md`.
+
+The dry run does not copy atomic memories.
+
+### 3. Apply
 
 ```bash
-python .ai-verse-memory/memory.py remember \
-  --type decision \
-  --scope project:example \
-  --source "path:decisions/log.md" \
-  --importance 4 \
-  --text "The project uses approach X." \
-  --why "Chosen after approach Y failed quality control."
+python scripts/ai-verse-memory/memory.py migrate-legacy --apply
 ```
 
-## Phase 4: Resolve chronology
+The migration:
 
-When several historical sources describe the same thing at different times:
+- preserves memory IDs and chronology;
+- preserves provenance;
+- rewrites only the scope needed for the v2 architecture;
+- skips existing IDs;
+- leaves the old `.ai-verse-memory/` directory untouched;
+- rebuilds the derived index after copying.
 
-1. identify the earlier memory;
-2. identify the later authoritative change;
-3. store both when the change itself is useful history;
-4. supersede the earlier memory so normal recall returns the current truth.
+### 4. Review old profile/scenario material separately
+
+The migration deliberately does not auto-promote `.ai-verse-memory/profile.md` or scenario summaries into AI-Verse OS profile/context. Those are summaries from the old architecture and may be stale or overlap newer canonical sources.
+
+If still useful, distill them manually into the correct operator/workspace source with provenance.
+
+## Validation
+
+After migration run:
 
 ```bash
-python .ai-verse-memory/memory.py supersede <old-id> \
-  --text "The current state is now X." \
-  --source "path:newer-source.md"
+python <memory-engine> rebuild
+python <memory-engine> doctor
+python <memory-engine> status
 ```
 
-Do not flatten a changing fact into a timeless statement.
+Test representative recalls for operator context, a workspace, a superseded memory, and an old lesson.
 
-## Phase 5: Promote stable global context
-
-After atomic memories exist, update `.ai-verse-memory/profile.md` with only stable information useful across many sessions.
-
-Good profile material:
-
-- role / enduring responsibilities
-- stable working preferences
-- durable constraints
-- long-term priorities
-
-Do not put volatile project status in the profile.
-
-## Phase 6: Build scenarios
-
-For projects, clients, or recurring domains with several relevant memories, create a scenario using the scenario template.
-
-A scenario is a derived working view. It should contain:
-
-- L0 abstract: one sentence;
-- L1 overview: compact current context;
-- current constraints;
-- important active decisions;
-- current state;
-- key entities;
-- unresolved items;
-- memory IDs supporting the summary.
-
-Do not delete the atomic memories after creating a scenario.
-
-## Phase 7: Identify skill candidates
-
-Review migrated `workflow` and `experience` memories.
-
-If a workflow is repeatable and has clear triggers, required inputs, execution steps, decision rules, guardrails, outputs, and validation, flag it in the migration report as a candidate Agent-OS skill.
-
-Do not automatically convert every remembered workflow into a skill.
-
-## Phase 8: Validate
-
-Run:
+Only then mark the migration complete:
 
 ```bash
-python .ai-verse-memory/memory.py rebuild
-python .ai-verse-memory/memory.py doctor
-python .ai-verse-memory/memory.py status
+python <memory-engine> migration-complete --summary "Reviewed and migrated durable historical memory."
 ```
-
-Test several representative recalls, especially:
-
-- a global preference;
-- a project decision;
-- a changed/superseded fact;
-- an entity detail;
-- a lesson from older work.
-
-## Phase 9: Mark complete
-
-Only after review:
-
-```bash
-python .ai-verse-memory/memory.py migration-complete \
-  --summary "Reviewed existing Agent-OS context and migrated durable memory."
-```
-
-This creates `.ai-verse-memory/state/migration.json`.
-
-Migration can be run again later for newly discovered historical sources. The marker only means the initial bootstrap pass is complete.

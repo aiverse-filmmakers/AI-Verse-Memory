@@ -19,7 +19,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Compile
-        run: python -m py_compile scripts/memory.py
+        run: |
+          python -m py_compile scripts/memory.py
+          python -m py_compile scripts/install.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
 
@@ -49,27 +51,40 @@ jobs:
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
 
-      - name: Install twice on Linux
-        if: runner.os != 'Windows'
-        shell: bash
+      - name: Standalone install twice
+        shell: python
         run: |
-          target="$(mktemp -d)"
-          AI_VERSE_MEMORY_TARGET="$target" bash install.sh
-          AI_VERSE_MEMORY_TARGET="$target" bash install.sh
-          test "$(grep -c 'AI-VERSE-MEMORY:START' "$target/CLAUDE.md")" -eq 1
-          test "$(grep -c 'AI-VERSE-MEMORY:START' "$target/AGENTS.md")" -eq 1
-          python "$target/.ai-verse-memory/memory.py" doctor
+          import os, pathlib, subprocess, tempfile
+          root = pathlib.Path.cwd()
+          target = pathlib.Path(tempfile.mkdtemp())
+          env = os.environ.copy()
+          env["AI_VERSE_MEMORY_TARGET"] = str(target)
+          env["AI_VERSE_MEMORY_SOURCE_DIR"] = str(root)
+          cmd = [os.sys.executable, str(root / "scripts/install.py"), "--target", str(target), "--source-dir", str(root)]
+          subprocess.run(cmd, check=True, env=env)
+          subprocess.run(cmd, check=True, env=env)
+          assert (target / ".ai-verse-memory/memory.py").exists()
+          assert (target / "AGENTS.md").read_text().count("AI-VERSE-MEMORY:START") == 1
+          assert (target / "CLAUDE.md").read_text().count("AI-VERSE-MEMORY:START") == 1
+          subprocess.run([os.sys.executable, str(target / ".ai-verse-memory/memory.py"), "--root", str(target), "doctor"], check=True)
 
-      - name: Install twice on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
+      - name: AI-Verse OS v2 native install twice
+        shell: python
         run: |
-          $target = Join-Path $env:RUNNER_TEMP "ai-verse-memory-smoke"
-          New-Item -ItemType Directory -Force -Path $target | Out-Null
-          $env:AI_VERSE_MEMORY_TARGET = $target
-          & ./install.ps1
-          & ./install.ps1
-          $claudeCount = (Select-String -Path (Join-Path $target "CLAUDE.md") -Pattern "AI-VERSE-MEMORY:START").Count
-          $agentsCount = (Select-String -Path (Join-Path $target "AGENTS.md") -Pattern "AI-VERSE-MEMORY:START").Count
-          if ($claudeCount -ne 1 -or $agentsCount -ne 1) { throw "Installer is not idempotent" }
-          python (Join-Path $target ".ai-verse-memory\memory.py") doctor
+          import os, pathlib, shutil, subprocess, tempfile
+          root = pathlib.Path.cwd()
+          target = pathlib.Path(tempfile.mkdtemp())
+          shutil.copytree(root / "tests/fixtures/ai-verse-os-v2", target, dirs_exist_ok=True)
+          cmd = [os.sys.executable, str(root / "scripts/install.py"), "--target", str(target), "--source-dir", str(root)]
+          subprocess.run(cmd, check=True)
+          subprocess.run(cmd, check=True)
+          engine = target / "scripts/ai-verse-memory/memory.py"
+          assert engine.exists()
+          assert not (target / ".ai-verse-memory").exists()
+          assert (target / "AGENTS.md").read_text().count("AI-VERSE-MEMORY:START") == 1
+          assert "AI-VERSE-MEMORY:START" not in (target / "CLAUDE.md").read_text()
+          assert (target / "skills/registry.yaml").read_text().count("id: ai-verse-memory") == 1
+          subprocess.run([os.sys.executable, str(engine), "--root", str(target), "remember", "--type", "state", "--workspace", "sample", "--text", "Native installer smoke memory"], check=True)
+          recall = subprocess.run([os.sys.executable, str(engine), "--root", str(target), "recall", "smoke memory", "--workspace", "sample"], check=True, text=True, capture_output=True)
+          assert "Native installer smoke memory" in recall.stdout
+          subprocess.run([os.sys.executable, str(engine), "--root", str(target), "doctor"], check=True)

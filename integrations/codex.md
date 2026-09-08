@@ -1,37 +1,25 @@
 # Codex Integration
 
-AI-Verse Memory uses two layers with Codex:
+AI-Verse Memory installs the same execution contract into `.agents/skills/ai-verse-memory/SKILL.md`.
 
-1. a project skill at `.agents/skills/ai-verse-memory/SKILL.md`;
-2. a small standing instruction in `AGENTS.md` so recall/capture is part of normal work.
+## AI-Verse OS v2 native mode
 
-The installer handles both when possible.
+The neutral engine lives at:
 
-## Standing instruction
-
-Add this block once to the repository's `AGENTS.md`:
-
-```markdown
-<!-- AI-VERSE-MEMORY:START -->
-## Persistent memory
-
-This repository uses AI-Verse Memory. Read `.ai-verse-memory/MEMORY-PROTOCOL.md` and follow it as standing guidance. Before substantial work, recall relevant prior context when it could materially change the task. After meaningful work, persist only durable facts, preferences, constraints, decisions, project state, entity details, experiences, or proven workflows. Supersede outdated memories rather than silently rewriting history.
-<!-- AI-VERSE-MEMORY:END -->
+```text
+scripts/ai-verse-memory/memory.py
 ```
 
-## Verify
-
-From the repository root:
+Codex should read the AI-Verse OS runtime contract, identify the active workspace, and use workspace-scoped recall:
 
 ```bash
-python .ai-verse-memory/memory.py doctor
-python .ai-verse-memory/memory.py status
+python scripts/ai-verse-memory/memory.py recall "<topic>" --workspace <id>
 ```
 
-## Existing repositories
+The installer keeps the Claude and Codex `SKILL.md` files identical so AI-Verse OS architecture checks do not report adapter drift.
 
-If `.ai-verse-memory/state/migration.json` is missing and the repo already contains useful context, Codex should perform `.ai-verse-memory/MIGRATION.md` once.
+`AGENTS.md` remains the canonical standing contract. Memory does not add a second standing block to the Claude adapter.
 
-## Session continuity
+## Standalone mode
 
-Capture durable decisions/state before compaction or session end when losing them would force costly reconstruction. Avoid transcript dumping.
+Codex uses `.agents/skills/ai-verse-memory/SKILL.md` and the `.ai-verse-memory/` engine/store.

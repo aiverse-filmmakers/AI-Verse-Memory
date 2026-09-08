@@ -1,7 +1,7 @@
 ---
 name: ai-verse-memory
-description: Install and operate a lightweight local-first persistent memory layer for an Agent-OS repository. Use it to remember durable facts, preferences, constraints, decisions, project state, entities, experiences, and proven workflows; recall relevant context before work; supersede outdated memories; rebuild the local index; and migrate useful historical context into the memory structure.
-version: 0.1.0
+description: Operate AI-Verse Memory as a scoped persistent memory engine. In AI-Verse OS v2 it indexes canonical operator/workspace context in place and stores only atomic historical memory in the OS memory layers; in other Agent-OS repositories it falls back to the standalone .ai-verse-memory layout.
+version: 0.2.0
 author: AI-VERSE
 license: MIT
 platforms: [linux, macos, windows]
@@ -11,208 +11,199 @@ metadata:
     category: productivity
 ---
 
-# AI-Verse Memory
+# AI-Verse Memory Engine
 
-## Purpose
+## Core rule
 
-Give an existing Agent-OS repository one shared, local, human-readable memory that can be used by Claude Code, Codex, Hermes, and other file-aware agents.
+> The operating system decides where truth lives. AI-Verse Memory provides capture, scoped recall, provenance, supersession, and a rebuildable local index.
 
-The core rule is simple:
+Markdown remains canonical. SQLite is derived and disposable.
 
-> Markdown is the memory. SQLite is only a rebuildable search index.
+## Detect the mode first
 
-Do not introduce a vector database, embedding service, cloud memory API, Docker stack, or separate LLM just to operate this skill.
-
-## When to use
-
-Use this skill when:
-
-- a new durable fact, preference, constraint, decision, project state, entity detail, event, or lesson appears;
-- the user asks you to remember something;
-- old information is corrected or becomes obsolete;
-- a task would benefit from prior project/user context;
-- the current session is about to be compacted or ended and meaningful state should survive;
-- the repository already contains old notes, context files, decisions, or transcripts that should be migrated;
-- a repeated successful procedure is mature enough to be proposed as a reusable skill.
-
-Do not store every conversation turn. Memory must earn its place.
-
-## Memory layers
-
-### Evidence
-
-Optional provenance showing where a memory came from. Prefer a path, session identifier, URL, commit, or short excerpt. Do not duplicate huge source files into the memory store.
-
-### Atomic memory
-
-One durable proposition. Keep it specific enough to retrieve and update independently.
-
-Types:
-
-- `fact`
-- `preference`
-- `constraint`
-- `decision`
-- `project_state`
-- `entity`
-- `event`
-- `experience`
-- `workflow`
-
-### Scenario
-
-A compact working view of a project, client, topic, or recurring situation. Scenario files summarize multiple atomic memories and point to important source memories. They are not substitutes for atomic memories.
-
-### Profile
-
-Stable high-level context useful across many sessions. Only promote information here after it has proven durable.
-
-## Capture rules
-
-Before writing memory, ask internally:
-
-1. Will this plausibly matter in a future session?
-2. Is it a fact, preference, constraint, decision, state change, entity detail, event, lesson, or proven workflow?
-3. Is it already represented canonically?
-4. Is this new information, or does it update an older memory?
-5. Is the source trustworthy enough to store as fact, or should confidence be lower?
-6. Is this sensitive information that should not be persisted without clear user intent?
-
-If it is not durable, do not save it.
-
-## Write procedure
-
-The helper is normally installed at `.ai-verse-memory/memory.py`.
-
-Create an atomic memory:
+From the repository root run the installed helper:
 
 ```bash
-python .ai-verse-memory/memory.py remember \
-  --type decision \
-  --scope project:example \
-  --importance 4 \
-  --source "session:current" \
-  --text "Use the new render pipeline for Example Project." \
-  --why "The previous pipeline caused repeated continuity failures."
+python scripts/ai-verse-memory/memory.py mode
 ```
 
-Prefer concise atomic memories. If a statement contains several independently changeable claims, split it.
-
-## Recall procedure
-
-Before substantial work where prior context may matter, search memory first:
+for AI-Verse OS v2, or:
 
 ```bash
-python .ai-verse-memory/memory.py recall "Example Project render pipeline" --scope project:example
+python .ai-verse-memory/memory.py mode
 ```
 
-Use the returned memory IDs and paths as evidence. Read the full Markdown file only when more detail is required.
+for standalone mode.
 
-Retrieval should prefer:
+### AI-Verse OS v2 native mode
 
-1. active over superseded memory;
-2. exact scope over global scope;
-3. stronger lexical relevance;
-4. higher importance;
-5. more recent updates when relevance is otherwise similar.
+If `AI-VERSE.yaml` declares schema v2 and `architecture: unified-workspace`, do not create a second profile, project model, decision store, or context tree.
 
-Do not load the entire memory directory into context.
+Use the OS as authority:
 
-## Updating old information
+- operator identity/preferences -> `operator/profile/`
+- operator current state -> `operator/context/`
+- operator historical memory -> `operator/memory/`
+- operator decisions -> `operator/decisions/`
+- workspace current state -> `workspaces/<id>/context/`
+- workspace historical memory -> `workspaces/<id>/memory/`
+- workspace decisions -> `workspaces/<id>/decisions/`
+- reusable knowledge -> root or workspace `knowledge/`
+- derived index -> `runtime/indexes/ai-verse-memory/`
 
-Do not silently edit history to make an old memory look as if it was always true.
+Atomic memories are stored under `operator/memory/atomic/` or `workspaces/<id>/memory/atomic/`.
 
-Use supersession:
+### Standalone mode
+
+If no compatible AI-Verse OS v2 manifest exists, preserve the original portable layout under `.ai-verse-memory/`.
+
+## Before substantial work
+
+1. Identify the active scope before recalling memory.
+2. In AI-Verse OS v2, identify the active workspace from `WORKSPACE.yaml` and routing context.
+3. Recall only the relevant scope.
+4. Use current canonical context over historical memory when they disagree.
+5. Read full source files only when the recall result shows they are needed.
+
+Native workspace recall:
 
 ```bash
-python .ai-verse-memory/memory.py supersede <old-memory-id> \
-  --type preference \
-  --text "The user now prefers the revised workflow." \
+python scripts/ai-verse-memory/memory.py recall "<task or topic>" --workspace <id>
+```
+
+This may return operator context plus the selected workspace, but it must not silently search unrelated workspaces.
+
+Operator-only recall:
+
+```bash
+python scripts/ai-verse-memory/memory.py recall "<task or topic>" --scope operator
+```
+
+Cross-workspace recall is exceptional and must be explicit:
+
+```bash
+python scripts/ai-verse-memory/memory.py recall "<task or topic>" --all-workspaces
+```
+
+## Decide whether something belongs in memory
+
+In AI-Verse OS v2, do not use atomic memory as a duplicate catch-all.
+
+Route information first:
+
+| Information | Canonical home |
+|---|---|
+| stable identity or enduring preference | operator profile |
+| what matters now | operator/workspace context |
+| settled choice and reasoning | operator/workspace decisions |
+| durable reusable method or domain knowledge | knowledge |
+| historical event, state transition, lesson, experience, or fact worth recalling later | atomic memory |
+| proven repeatable execution method | candidate skill |
+| transient input | inbox or no persistence |
+
+Atomic memory should mainly preserve history that would otherwise be expensive to reconstruct.
+
+## Write an atomic memory
+
+Operator memory:
+
+```bash
+python scripts/ai-verse-memory/memory.py remember \
+  --type experience \
+  --scope operator \
+  --text "The first rollout failed because approval routing was missing." \
   --source "session:current"
 ```
 
-The old memory remains inspectable but becomes inactive for normal recall.
-
-## Scenario maintenance
-
-Create or refresh a scenario when a project/topic has enough atomic memories that repeatedly reconstructing the working context becomes wasteful.
-
-Use `templates/scenario.md` as the format. A scenario should contain:
-
-- one-sentence abstract;
-- compact current overview;
-- active constraints;
-- important decisions;
-- current state;
-- key entities;
-- unresolved items;
-- relevant memory IDs.
-
-This provides progressive disclosure: abstract first, overview second, atomic details only if needed.
-
-## Profile maintenance
-
-`profile.md` is not a dumping ground. Promote only stable, broadly useful information. Preferences or project facts that change often should stay atomic or scenario-scoped.
-
-## Session continuity
-
-Before compaction or at the end of a substantial session, capture only state that would be costly to reconstruct, such as:
-
-- what was decided;
-- what remains unfinished;
-- a newly discovered constraint;
-- a successful or failed approach worth remembering;
-- a project state transition.
-
-Do not preserve raw tool noise merely because the session is ending.
-
-## Workflow promotion
-
-When an `experience` or `workflow` memory represents a procedure that has succeeded repeatedly and has clear trigger conditions, inputs, execution steps, guardrails, and verification, propose promoting it into a real Agent-OS skill.
-
-Memory records that a procedure exists. A skill should define how to execute it reliably.
-
-## Migration of existing repositories
-
-If `.ai-verse-memory/state/migration.json` does not exist and the repository already contains substantial context, read `migration/MIGRATION.md` and perform the migration workflow.
-
-Start with:
+Workspace memory:
 
 ```bash
-python .ai-verse-memory/memory.py discover . --output .ai-verse-memory/state/discovery.md
+python scripts/ai-verse-memory/memory.py remember \
+  --type state \
+  --workspace example \
+  --text "The integration passed supervised testing and is ready for the next review gate." \
+  --source "session:current"
 ```
 
-Use the current connected agent to inspect likely sources and distill durable memories. Do not require another model/API.
+Use concise, independently updateable memories. Preserve provenance when practical.
 
-Migration must:
+## Supersession
 
-- preserve provenance;
-- deduplicate;
-- identify conflicts;
-- supersede obsolete information;
-- avoid importing transient chatter;
-- create scenario summaries where useful;
-- finish with `rebuild` and `doctor`;
-- write `.ai-verse-memory/state/migration.json` only after a successful pass.
+Never rewrite historical memory to pretend the old state never existed.
 
-## Safety and privacy
+```bash
+python scripts/ai-verse-memory/memory.py supersede <memory-id> \
+  --text "The newer state is now active." \
+  --source "session:current"
+```
 
-Do not automatically persist passwords, API keys, authentication tokens, private keys, financial credentials, government identifiers, medical information, or other highly sensitive data unless the user explicitly requests that exact information be stored locally and understands the consequence.
+Normal recall excludes superseded atomic memories unless `--include-history` is requested.
 
-Prefer references to secure locations instead of secret values.
+Do not use memory supersession to edit current OS context or decisions. Update their canonical OS files instead.
+
+## Index behavior
+
+In native mode the engine indexes, without copying:
+
+- operator profile
+- operator current context
+- operator decision files
+- operator memory summaries and atomic memory
+- workspace manifests
+- workspace current context
+- workspace decisions
+- workspace memory summaries and atomic memory
+
+It intentionally does not turn the full knowledge base into a hidden duplicate RAG store. AI-Verse OS routing remains responsible for deeper knowledge retrieval.
+
+## Memory quality rules
+
+- Durable: likely to matter later.
+- Atomic: one independently changeable proposition.
+- Grounded: preserve source/provenance when possible.
+- Scoped: operator or the correct workspace.
+- Historical: do not compete with current context.
+- Lifecycle-aware: supersede outdated atomic memories.
+- Private by default: never store secrets automatically.
+- Minimal: search before creating duplicates.
+
+## Legacy v0.1 migration
+
+If native AI-Verse OS v2 contains an old `.ai-verse-memory/` store, leave it untouched until reviewed.
+
+Dry run:
+
+```bash
+python scripts/ai-verse-memory/memory.py migrate-legacy
+```
+
+Apply only after review:
+
+```bash
+python scripts/ai-verse-memory/memory.py migrate-legacy --apply
+```
+
+The migration copies only safely mappable atomic memories. It never deletes the old store and does not blindly promote old profile/scenario summaries into current OS truth.
 
 ## Health checks
 
-Run:
-
 ```bash
-python .ai-verse-memory/memory.py doctor
+python scripts/ai-verse-memory/memory.py doctor
+python scripts/ai-verse-memory/memory.py status
 ```
 
-A healthy installation has:
+A healthy native install should verify:
 
-- writable canonical Markdown store;
-- usable SQLite;
-- FTS5 when available, with automatic lexical fallback otherwise;
-- an index that can be rebuilt from Markdown;
-- no requirement for network access during normal recall/write operations.
+- AI-Verse OS v2 detection
+- writable canonical memory paths
+- derived index path
+- SQLite and rebuild
+- workspace isolation
+- Claude/Codex skill parity
+- capability registry entry
+- canonical AGENTS integration
+- no duplicated standing block in `CLAUDE.md`
+
+## Safety
+
+Do not automatically persist passwords, API keys, tokens, private keys, recovery codes, financial credentials, government identifiers, highly sensitive medical details, or other secrets. Prefer a pointer to a secure system instead of the secret value.

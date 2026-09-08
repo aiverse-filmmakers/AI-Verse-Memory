@@ -1,0 +1,7 @@
+schema_version: "2.0"
+architecture: unified-workspace
+paths:
+  runtime_contract: AGENTS.md
+  operator: operator/
+  workspaces: workspaces/
+  runtime: runtime/
