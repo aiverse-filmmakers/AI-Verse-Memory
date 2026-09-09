@@ -128,7 +128,7 @@ class NativeSourceIsolationAcceptanceTests(unittest.TestCase):
             scope = "workspace:beta"
             workspace = "beta"
             self._write_atomic(source, "mem-source", "workspace:beta", token)
-            self._write_atomic(cross, "mem-source", "workspace:alpha", token)
+            self._write_atomic(cross, "mem-cross-target", "workspace:alpha", token)
         else:
             raise AssertionError(kind)
 
@@ -148,7 +148,6 @@ class NativeSourceIsolationAcceptanceTests(unittest.TestCase):
         return mem.recall(token, scope="operator", root=root, mode=mem.MODE_NATIVE)
 
     def _assert_existing_row_then_reject(self, root: Path, token: str, spec) -> None:
-        mem.rebuild(silent=True, root=root, mode=mem.MODE_NATIVE)
         conn, _ = mem.connect_db(root, mem.MODE_NATIVE)
         row = conn.execute("SELECT id FROM items WHERE path=?", (spec["relative"],)).fetchone()
         conn.close()
