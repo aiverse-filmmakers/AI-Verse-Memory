@@ -296,16 +296,87 @@ def atomic_path(mem_id: str, created_at: str, scope: str, root: Optional[Path] =
     return folder / f"{mem_id}.md"
 
 
+def _native_source_identity_from_parts(parts: Tuple[str, ...], root: Path) -> Tuple[str, str]:
+    if len(parts) >= 3 and parts[0] == "operator":
+        if parts[1] == "profile":
+            return "profile", "operator"
+        if parts[1] == "context":
+            return "context", "operator"
+        if parts[1] == "decisions":
+            return "decision", "operator"
+        if parts[1] == "memory":
+            if len(parts) >= 4 and parts[2] == "atomic":
+                return "memory", "operator"
+            if len(parts) == 3 and parts[2].lower().endswith(".md"):
+                return "memory_summary", "operator"
 
-def _atomic_scope_from_relative_parts(parts: Tuple[str, ...], root: Path) -> str:
-    if len(parts) >= 3 and parts[:3] == ("operator", "memory", "atomic"):
-        return "operator"
-    if len(parts) >= 4 and parts[0] == "workspaces" and parts[2:4] == ("memory", "atomic"):
+    if len(parts) >= 3 and parts[0] == "workspaces":
         wid = parts[1]
         if wid not in workspace_ids(root):
-            raise ValueError(f"Atomic memory belongs to unknown workspace: {wid}")
-        return f"workspace:{wid}"
-    raise ValueError("Atomic memory path is outside authorized native memory roots")
+            raise ValueError(f"Source belongs to unknown workspace: {wid}")
+        scope = f"workspace:{wid}"
+        if len(parts) == 3 and parts[2] == "WORKSPACE.yaml":
+            return "workspace_manifest", scope
+        if len(parts) >= 4 and parts[2] == "context":
+            return "context", scope
+        if len(parts) >= 4 and parts[2] == "decisions":
+            return "decision", scope
+        if len(parts) >= 4 and parts[2] == "memory":
+            if len(parts) >= 5 and parts[3] == "atomic":
+                return "memory", scope
+            if len(parts) == 4 and parts[3].lower().endswith(".md"):
+                return "memory_summary", scope
+
+    raise ValueError("Source path is outside authorized native memory source roots")
+
+
+def _lexical_relative_path(path: Path, root: Path) -> str:
+    root_lexical = Path(os.path.abspath(root))
+    path_lexical = Path(os.path.abspath(path))
+    try:
+        return path_lexical.relative_to(root_lexical).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"Source path escapes repository root: {path}") from exc
+
+
+def _native_source_identity(
+    path: Path,
+    root: Path,
+    *,
+    expected_kind: Optional[str] = None,
+    expected_scope: Optional[str] = None,
+) -> Tuple[str, str]:
+    root_lexical = Path(os.path.abspath(root))
+    path_lexical = Path(os.path.abspath(path))
+    try:
+        lexical_rel = path_lexical.relative_to(root_lexical)
+    except ValueError as exc:
+        raise ValueError(f"Source path escapes repository root: {path}") from exc
+    lexical_kind, lexical_scope = _native_source_identity_from_parts(lexical_rel.parts, root)
+
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise ValueError(f"Source path cannot be resolved safely: {path}") from exc
+    if not resolved_path.is_file():
+        raise ValueError(f"Source path is not a regular file: {path}")
+    try:
+        resolved_rel = resolved_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"Source path resolves outside repository root: {path}") from exc
+    physical_kind, physical_scope = _native_source_identity_from_parts(resolved_rel.parts, root)
+
+    if (lexical_kind, lexical_scope) != (physical_kind, physical_scope):
+        raise ValueError(
+            "Source path crosses native ownership boundary: "
+            f"lexical {lexical_scope}/{lexical_kind}, resolved {physical_scope}/{physical_kind}"
+        )
+    if expected_kind is not None and lexical_kind != expected_kind:
+        raise ValueError(f"Source kind mismatch: expected {expected_kind}, found {lexical_kind}")
+    if expected_scope is not None and lexical_scope != expected_scope:
+        raise ValueError(f"Source scope mismatch: expected {expected_scope}, found {lexical_scope}")
+    return lexical_kind, lexical_scope
 
 
 def _iter_atomic_candidates(root: Path, mode: str) -> Iterable[Path]:
@@ -324,33 +395,8 @@ def _iter_atomic_candidates(root: Path, mode: str) -> Iterable[Path]:
 def infer_scope_from_path(path: Path, root: Path, mode: str) -> str:
     if mode == MODE_STANDALONE:
         return "global"
-
-    root_lexical = Path(os.path.abspath(root))
-    path_lexical = Path(os.path.abspath(path))
-    try:
-        lexical_rel = path_lexical.relative_to(root_lexical)
-    except ValueError as exc:
-        raise ValueError(f"Atomic memory path escapes repository root: {path}") from exc
-    lexical_scope = _atomic_scope_from_relative_parts(lexical_rel.parts, root)
-
-    try:
-        resolved_root = root.resolve(strict=True)
-        resolved_path = path.resolve(strict=True)
-    except (FileNotFoundError, OSError) as exc:
-        raise ValueError(f"Atomic memory path cannot be resolved safely: {path}") from exc
-    if not resolved_path.is_file():
-        raise ValueError(f"Atomic memory path is not a regular file: {path}")
-    try:
-        resolved_rel = resolved_path.relative_to(resolved_root)
-    except ValueError as exc:
-        raise ValueError(f"Atomic memory path resolves outside repository root: {path}") from exc
-
-    physical_scope = _atomic_scope_from_relative_parts(resolved_rel.parts, root)
-    if physical_scope != lexical_scope:
-        raise ValueError(
-            f"Atomic memory path crosses scope boundary: lexical {lexical_scope}, resolved {physical_scope}"
-        )
-    return physical_scope
+    _, scope = _native_source_identity(path, root, expected_kind="memory")
+    return scope
 
 
 def _validated_atomic_scope(path: Path, root: Path, mode: str, meta: Dict[str, str]) -> str:
@@ -375,7 +421,7 @@ def iter_atomic_files(root: Optional[Path] = None, mode: Optional[str] = None) -
 
     for path in _iter_atomic_candidates(root, mode):
         try:
-            infer_scope_from_path(path, root, mode)
+            _native_source_identity(path, root, expected_kind="memory")
             meta, _ = parse_markdown(path)
             _validated_atomic_scope(path, root, mode, meta)
         except (ValueError, OSError):
@@ -434,11 +480,10 @@ def connect_db(root: Optional[Path] = None, mode: Optional[str] = None, reset: b
     return conn, fts
 
 
-
 def index_atomic(path: Path, root: Path, mode: str) -> Optional[Tuple]:
     if mode == MODE_NATIVE:
         try:
-            infer_scope_from_path(path, root, mode)
+            _native_source_identity(path, root, expected_kind="memory")
         except (ValueError, OSError):
             return None
     try:
@@ -452,10 +497,11 @@ def index_atomic(path: Path, root: Path, mode: str) -> Optional[Tuple]:
         scope = _validated_atomic_scope(path, root, mode, meta)
     except (ValueError, OSError):
         return None
+    stored_path = _lexical_relative_path(path, root) if mode == MODE_NATIVE else relpath(path, root)
     return (
         meta.get("id", path.stem),
         "memory",
-        relpath(path, root),
+        stored_path,
         meta.get("type", "fact"),
         scope,
         meta.get("status", "active"),
@@ -471,18 +517,34 @@ def index_atomic(path: Path, root: Path, mode: str) -> Optional[Tuple]:
     )
 
 
-def index_document(path: Path, root: Path, kind: str, scope: str, importance: float) -> Tuple:
-    if path.suffix.lower() == ".md":
-        meta, body = parse_markdown(path)
-    else:
-        meta = {}
-        body = path.read_text(encoding="utf-8", errors="replace").strip()
-    doc_hash = hashlib.sha1(relpath(path, root).encode("utf-8")).hexdigest()[:12]
+def index_document(
+    path: Path,
+    root: Path,
+    kind: str,
+    scope: str,
+    importance: float,
+    mode: str = MODE_STANDALONE,
+) -> Optional[Tuple]:
+    if mode == MODE_NATIVE:
+        try:
+            _native_source_identity(path, root, expected_kind=kind, expected_scope=scope)
+        except (ValueError, OSError):
+            return None
+    try:
+        if path.suffix.lower() == ".md":
+            meta, body = parse_markdown(path)
+        else:
+            meta = {}
+            body = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    stored_path = _lexical_relative_path(path, root) if mode == MODE_NATIVE else relpath(path, root)
+    doc_hash = hashlib.sha1(stored_path.encode("utf-8")).hexdigest()[:12]
     doc_id = meta.get("id") or f"{kind}:{doc_hash}"
     return (
         doc_id,
         kind,
-        relpath(path, root),
+        stored_path,
         meta.get("type", kind),
         scope,
         meta.get("status", "active"),
@@ -505,7 +567,7 @@ def _iter_non_readme_md(base: Path, recursive: bool = True) -> Iterable[Path]:
     return [p for p in iterator if p.name.lower() != "readme.md" and not any(part.startswith(".") for part in p.relative_to(base).parts)]
 
 
-def native_documents(root: Path) -> Iterable[Tuple[Path, str, str, float]]:
+def _native_document_candidates(root: Path) -> Iterable[Tuple[Path, str, str, float]]:
     for path in _iter_non_readme_md(root / "operator" / "profile"):
         yield path, "profile", "operator", 5.0
     for path in _iter_non_readme_md(root / "operator" / "context"):
@@ -529,6 +591,15 @@ def native_documents(root: Path) -> Iterable[Tuple[Path, str, str, float]]:
             yield path, "memory_summary", scope, 4.0
 
 
+def native_documents(root: Path) -> Iterable[Tuple[Path, str, str, float]]:
+    for path, kind, scope, importance in _native_document_candidates(root):
+        try:
+            _native_source_identity(path, root, expected_kind=kind, expected_scope=scope)
+        except (ValueError, OSError):
+            continue
+        yield path, kind, scope, importance
+
+
 def rebuild(silent: bool = False, root: Optional[Path] = None, mode: Optional[str] = None) -> int:
     root = root or repository_root()
     mode = mode or detect_mode(root)
@@ -543,15 +614,21 @@ def rebuild(silent: bool = False, root: Optional[Path] = None, mode: Optional[st
 
     if mode == MODE_NATIVE:
         for path, kind, scope, importance in native_documents(root):
-            rows.append(index_document(path, root, kind, scope, importance))
+            row = index_document(path, root, kind, scope, importance, mode)
+            if row:
+                rows.append(row)
     else:
         p = paths(root, mode)
         if p["profile"].exists():
-            rows.append(index_document(p["profile"], root, "profile", "global", 5.0))
+            row = index_document(p["profile"], root, "profile", "global", 5.0, mode)
+            if row:
+                rows.append(row)
         for file in sorted(p["scenarios"].glob("*.md")):
             meta, _ = parse_markdown(file)
             scope = meta.get("scope", "global")
-            rows.append(index_document(file, root, "scenario", scope, 4.0))
+            row = index_document(file, root, "scenario", scope, 4.0, mode)
+            if row:
+                rows.append(row)
 
     conn.executemany(
         """
@@ -573,11 +650,52 @@ def rebuild(silent: bool = False, root: Optional[Path] = None, mode: Optional[st
     return len(rows)
 
 
+def _indexed_source_is_valid(row: sqlite3.Row, root: Path, mode: str) -> bool:
+    if mode != MODE_NATIVE:
+        return True
+    stored = Path(row["path"] or "")
+    if stored.is_absolute() or not stored.parts:
+        return False
+    source = root / stored
+    try:
+        kind, scope = _native_source_identity(
+            source,
+            root,
+            expected_kind=str(row["kind"] or ""),
+            expected_scope=str(row["scope"] or ""),
+        )
+        if kind == "memory":
+            meta, _ = parse_markdown(source)
+            if meta.get("id") != row["id"]:
+                return False
+            validated = _validated_atomic_scope(source, root, mode, meta)
+            if validated != scope:
+                return False
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def _purge_invalid_indexed_sources(conn: sqlite3.Connection, fts: bool, root: Path, mode: str) -> int:
+    if mode != MODE_NATIVE:
+        return 0
+    rows = conn.execute("SELECT * FROM items").fetchall()
+    invalid_ids = [row["id"] for row in rows if not _indexed_source_is_valid(row, root, mode)]
+    if not invalid_ids:
+        return 0
+    conn.executemany("DELETE FROM items WHERE id=?", [(item_id,) for item_id in invalid_ids])
+    if fts:
+        conn.executemany("DELETE FROM item_fts WHERE id=?", [(item_id,) for item_id in invalid_ids])
+    conn.commit()
+    return len(invalid_ids)
+
+
 def find_exact_active(text: str, scope: str, root: Path, mode: str) -> Optional[Tuple[str, str]]:
     p = ensure_layout(root, mode)
     if not p["db"].exists():
         rebuild(silent=True, root=root, mode=mode)
-    conn, _ = connect_db(root, mode)
+    conn, fts = connect_db(root, mode)
+    _purge_invalid_indexed_sources(conn, fts, root, mode)
     row = conn.execute(
         "SELECT id, path FROM items WHERE kind='memory' AND status='active' AND lower(trim(text))=lower(trim(?)) AND scope=? LIMIT 1",
         (text, scope),
@@ -729,25 +847,6 @@ def custom_score(row: sqlite3.Row, query: str, primary_scope: Optional[str]) -> 
     return score
 
 
-
-def _indexed_memory_source_is_valid(row: sqlite3.Row, root: Path, mode: str) -> bool:
-    if mode != MODE_NATIVE or row["kind"] != "memory":
-        return True
-    stored = Path(row["path"] or "")
-    if stored.is_absolute() or not stored.parts:
-        return False
-    source = root / stored
-    try:
-        physical = infer_scope_from_path(source, root, mode)
-        meta, _ = parse_markdown(source)
-        if meta.get("id") != row["id"]:
-            return False
-        validated = _validated_atomic_scope(source, root, mode, meta)
-    except (ValueError, OSError):
-        return False
-    return validated == physical == row["scope"]
-
-
 def recall(
     query: str,
     scope: Optional[str] = None,
@@ -764,6 +863,7 @@ def recall(
     if not p["db"].exists():
         rebuild(silent=True, root=root, mode=mode)
     conn, fts = connect_db(root, mode)
+    _purge_invalid_indexed_sources(conn, fts, root, mode)
     scopes, primary_scope = allowed_scopes(root, mode, scope, workspace, all_workspaces)
 
     status_clause = "" if include_history else "AND i.status='active'"
@@ -803,7 +903,7 @@ def recall(
     candidates = [
         row
         for row in candidates
-        if _indexed_memory_source_is_valid(row, root, mode) and row_matches_query(row, query)
+        if _indexed_source_is_valid(row, root, mode) and row_matches_query(row, query)
     ]
     ranked = sorted(candidates, key=lambda r: custom_score(r, query, primary_scope), reverse=True)
     conn.close()
@@ -1078,7 +1178,6 @@ def integration_checks(root: Path, mode: str) -> List[Tuple[str, bool, str, bool
     return checks
 
 
-
 def doctor(root: Optional[Path] = None, mode: Optional[str] = None) -> int:
     root = root or repository_root()
     mode = mode or detect_mode(root)
@@ -1112,9 +1211,14 @@ def doctor(root: Optional[Path] = None, mode: Optional[str] = None) -> int:
     if mode == MODE_NATIVE:
         for path in _iter_atomic_candidates(root, mode):
             try:
-                infer_scope_from_path(path, root, mode)
+                _native_source_identity(path, root, expected_kind="memory")
                 meta, _ = parse_markdown(path)
                 _validated_atomic_scope(path, root, mode, meta)
+            except (ValueError, OSError) as exc:
+                checks.append(("Workspace isolation", False, f"{path}: {exc}", True))
+        for path, kind, scope, _ in _native_document_candidates(root):
+            try:
+                _native_source_identity(path, root, expected_kind=kind, expected_scope=scope)
             except (ValueError, OSError) as exc:
                 checks.append(("Workspace isolation", False, f"{path}: {exc}", True))
         checks.extend(integration_checks(root, mode))
@@ -1145,6 +1249,7 @@ def status(root: Optional[Path] = None, mode: Optional[str] = None) -> None:
     if not p["db"].exists():
         rebuild(silent=True, root=root, mode=mode)
     conn, fts = connect_db(root, mode)
+    _purge_invalid_indexed_sources(conn, fts, root, mode)
     total = conn.execute("SELECT count(*) FROM items WHERE kind='memory'").fetchone()[0]
     active = conn.execute("SELECT count(*) FROM items WHERE kind='memory' AND status='active'").fetchone()[0]
     documents = conn.execute("SELECT count(*) FROM items WHERE kind!='memory'").fetchone()[0]
