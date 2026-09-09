@@ -437,6 +437,19 @@ def relpath(path: Path, root: Optional[Path] = None) -> str:
         return str(path.resolve())
 
 
+def _source_identity_key(kind: str, scope: str, stored_path: str) -> str:
+    raw = f"{kind}\n{scope}\n{stored_path}".encode("utf-8")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _source_version(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
 def connect_db(root: Optional[Path] = None, mode: Optional[str] = None, reset: bool = False) -> Tuple[sqlite3.Connection, bool]:
     root = root or repository_root()
     mode = mode or detect_mode(root)
@@ -445,6 +458,7 @@ def connect_db(root: Optional[Path] = None, mode: Optional[str] = None, reset: b
     conn.row_factory = sqlite3.Row
     if reset:
         conn.execute("DROP TABLE IF EXISTS items")
+        conn.execute("DROP TABLE IF EXISTS source_state")
         try:
             conn.execute("DROP TABLE IF EXISTS item_fts")
         except sqlite3.OperationalError:
@@ -470,6 +484,17 @@ def connect_db(root: Optional[Path] = None, mode: Optional[str] = None, reset: b
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_state (
+            item_id TEXT PRIMARY KEY,
+            source_identity TEXT NOT NULL,
+            source_version TEXT NOT NULL,
+            freshness TEXT NOT NULL,
+            indexed_at TEXT NOT NULL
+        )
+        """
+    )
     fts = True
     try:
         conn.execute(
@@ -477,6 +502,7 @@ def connect_db(root: Optional[Path] = None, mode: Optional[str] = None, reset: b
         )
     except sqlite3.OperationalError:
         fts = False
+    conn.commit()
     return conn, fts
 
 
@@ -600,6 +626,63 @@ def native_documents(root: Path) -> Iterable[Tuple[Path, str, str, float]]:
         yield path, kind, scope, importance
 
 
+def _insert_index_rows(conn: sqlite3.Connection, fts: bool, rows: Sequence[Tuple]) -> None:
+    if not rows:
+        return
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO items
+        (id, kind, path, type, scope, status, importance, confidence, created_at, updated_at, source, tags, text, why, authority)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    if fts:
+        conn.executemany(
+            "INSERT INTO item_fts (id, text, why, tags, scope, type, kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(r[0], r[12], r[13], r[11], r[4], r[3], r[1]) for r in rows],
+        )
+
+
+def _delete_index_ids(conn: sqlite3.Connection, fts: bool, item_ids: Sequence[str]) -> int:
+    ids = sorted({item_id for item_id in item_ids if item_id})
+    if not ids:
+        return 0
+    conn.executemany("DELETE FROM items WHERE id=?", [(item_id,) for item_id in ids])
+    conn.executemany("DELETE FROM source_state WHERE item_id=?", [(item_id,) for item_id in ids])
+    if fts:
+        conn.executemany("DELETE FROM item_fts WHERE id=?", [(item_id,) for item_id in ids])
+    return len(ids)
+
+
+def _source_state_for_row(row: Tuple, root: Path, freshness: str) -> Optional[Tuple[str, str, str, str, str]]:
+    source = root / str(row[2])
+    try:
+        version = _source_version(source)
+    except OSError:
+        return None
+    return (
+        str(row[0]),
+        _source_identity_key(str(row[1]), str(row[4]), str(row[2])),
+        version,
+        freshness,
+        now_iso(),
+    )
+
+
+def _upsert_source_states(conn: sqlite3.Connection, states: Sequence[Tuple[str, str, str, str, str]]) -> None:
+    if not states:
+        return
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO source_state
+        (item_id, source_identity, source_version, freshness, indexed_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        states,
+    )
+
+
 def rebuild(silent: bool = False, root: Optional[Path] = None, mode: Optional[str] = None) -> int:
     root = root or repository_root()
     mode = mode or detect_mode(root)
@@ -630,19 +713,14 @@ def rebuild(silent: bool = False, root: Optional[Path] = None, mode: Optional[st
             if row:
                 rows.append(row)
 
-    conn.executemany(
-        """
-        INSERT OR REPLACE INTO items
-        (id, kind, path, type, scope, status, importance, confidence, created_at, updated_at, source, tags, text, why, authority)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows,
-    )
-    if fts:
-        conn.executemany(
-            "INSERT INTO item_fts (id, text, why, tags, scope, type, kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(r[0], r[12], r[13], r[11], r[4], r[3], r[1]) for r in rows],
-        )
+    _insert_index_rows(conn, fts, rows)
+    if mode == MODE_NATIVE:
+        states = []
+        for row in rows:
+            state = _source_state_for_row(row, root, "historical" if row[1] == "memory" else "fresh")
+            if state:
+                states.append(state)
+        _upsert_source_states(conn, states)
     conn.commit()
     conn.close()
     if not silent:
@@ -681,13 +759,118 @@ def _purge_invalid_indexed_sources(conn: sqlite3.Connection, fts: bool, root: Pa
         return 0
     rows = conn.execute("SELECT * FROM items").fetchall()
     invalid_ids = [row["id"] for row in rows if not _indexed_source_is_valid(row, root, mode)]
-    if not invalid_ids:
+    removed = _delete_index_ids(conn, fts, invalid_ids)
+    if removed:
+        conn.commit()
+    return removed
+
+
+def _refresh_native_canonical_sources(conn: sqlite3.Connection, fts: bool, root: Path, mode: str) -> int:
+    if mode != MODE_NATIVE:
         return 0
-    conn.executemany("DELETE FROM items WHERE id=?", [(item_id,) for item_id in invalid_ids])
-    if fts:
-        conn.executemany("DELETE FROM item_fts WHERE id=?", [(item_id,) for item_id in invalid_ids])
-    conn.commit()
-    return len(invalid_ids)
+
+    current_rows: List[Tuple] = []
+    desired_state_by_path: Dict[str, Tuple[str, str, str, str, str]] = {}
+    for path, kind, scope, importance in native_documents(root):
+        row = index_document(path, root, kind, scope, importance, mode)
+        if not row:
+            continue
+        state = _source_state_for_row(row, root, "fresh")
+        if not state:
+            continue
+        current_rows.append(row)
+        desired_state_by_path[str(row[2])] = state
+
+    existing = conn.execute(
+        """
+        SELECT i.*, s.source_identity, s.source_version, s.freshness, s.indexed_at
+        FROM items i
+        LEFT JOIN source_state s ON s.item_id=i.id
+        WHERE i.kind!='memory'
+        """
+    ).fetchall()
+    existing_by_path: Dict[str, List[sqlite3.Row]] = {}
+    for row in existing:
+        existing_by_path.setdefault(str(row["path"] or ""), []).append(row)
+
+    current_paths = {str(row[2]) for row in current_rows}
+    remove_ids: List[str] = [
+        str(row["id"])
+        for row in existing
+        if str(row["path"] or "") not in current_paths
+    ]
+    rows_to_insert: List[Tuple] = []
+    states_to_insert: List[Tuple[str, str, str, str, str]] = []
+
+    for row in current_rows:
+        stored_path = str(row[2])
+        desired_state = desired_state_by_path[stored_path]
+        previous = existing_by_path.get(stored_path, [])
+        exact = next(
+            (
+                item
+                for item in previous
+                if str(item["id"]) == str(row[0])
+                and str(item["kind"]) == str(row[1])
+                and str(item["scope"]) == str(row[4])
+            ),
+            None,
+        )
+        unchanged = bool(
+            exact
+            and str(exact["source_identity"] or "") == desired_state[1]
+            and str(exact["source_version"] or "") == desired_state[2]
+            and str(exact["freshness"] or "") == "fresh"
+        )
+        if unchanged:
+            continue
+        remove_ids.extend(str(item["id"]) for item in previous)
+        remove_ids.append(str(row[0]))
+        rows_to_insert.append(row)
+        states_to_insert.append(desired_state)
+
+    removed = _delete_index_ids(conn, fts, remove_ids)
+    _insert_index_rows(conn, fts, rows_to_insert)
+    _upsert_source_states(conn, states_to_insert)
+    conn.execute("DELETE FROM source_state WHERE item_id NOT IN (SELECT id FROM items)")
+    if removed or rows_to_insert:
+        conn.commit()
+    return removed + len(rows_to_insert)
+
+
+def _ensure_historical_source_state(conn: sqlite3.Connection, root: Path, mode: str) -> int:
+    if mode != MODE_NATIVE:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT i.*
+        FROM items i
+        LEFT JOIN source_state s ON s.item_id=i.id
+        WHERE i.kind='memory' AND s.item_id IS NULL
+        """
+    ).fetchall()
+    states = []
+    for row in rows:
+        if not _indexed_source_is_valid(row, root, mode):
+            continue
+        source = root / str(row["path"])
+        try:
+            version = _source_version(source)
+        except OSError:
+            continue
+        states.append(
+            (
+                str(row["id"]),
+                _source_identity_key(str(row["kind"]), str(row["scope"]), str(row["path"])),
+                version,
+                "historical",
+                now_iso(),
+            )
+        )
+    _upsert_source_states(conn, states)
+    if states:
+        conn.commit()
+    return len(states)
 
 
 def find_exact_active(text: str, scope: str, root: Path, mode: str) -> Optional[Tuple[str, str]]:
@@ -864,6 +1047,8 @@ def recall(
         rebuild(silent=True, root=root, mode=mode)
     conn, fts = connect_db(root, mode)
     _purge_invalid_indexed_sources(conn, fts, root, mode)
+    _refresh_native_canonical_sources(conn, fts, root, mode)
+    _ensure_historical_source_state(conn, root, mode)
     scopes, primary_scope = allowed_scopes(root, mode, scope, workspace, all_workspaces)
 
     status_clause = "" if include_history else "AND i.status='active'"
@@ -881,8 +1066,10 @@ def recall(
         fts_query = " OR ".join(f'"{t.replace(chr(34), "")}"' for t in terms[:12])
         try:
             sql = f"""
-                SELECT i.* FROM item_fts f
+                SELECT i.*, s.source_identity, s.source_version, s.freshness, s.indexed_at
+                FROM item_fts f
                 JOIN items i ON i.id=f.id
+                LEFT JOIN source_state s ON s.item_id=i.id
                 WHERE item_fts MATCH ? {status_clause} {scope_clause}
                 LIMIT 200
             """
@@ -893,7 +1080,9 @@ def recall(
 
     if not used_fts:
         sql = f"""
-            SELECT i.* FROM items i
+            SELECT i.*, s.source_identity, s.source_version, s.freshness, s.indexed_at
+            FROM items i
+            LEFT JOIN source_state s ON s.item_id=i.id
             WHERE 1=1 {status_clause} {scope_clause}
             ORDER BY i.importance DESC, i.updated_at DESC
             LIMIT 2000
@@ -1250,6 +1439,8 @@ def status(root: Optional[Path] = None, mode: Optional[str] = None) -> None:
         rebuild(silent=True, root=root, mode=mode)
     conn, fts = connect_db(root, mode)
     _purge_invalid_indexed_sources(conn, fts, root, mode)
+    _refresh_native_canonical_sources(conn, fts, root, mode)
+    _ensure_historical_source_state(conn, root, mode)
     total = conn.execute("SELECT count(*) FROM items WHERE kind='memory'").fetchone()[0]
     active = conn.execute("SELECT count(*) FROM items WHERE kind='memory' AND status='active'").fetchone()[0]
     documents = conn.execute("SELECT count(*) FROM items WHERE kind!='memory'").fetchone()[0]
@@ -1305,6 +1496,13 @@ def print_recall(rows: Iterable[sqlite3.Row], query: str, scope_label: Optional[
             details.append(f"source={row['source']}")
         if row["updated_at"]:
             details.append(f"updated={row['updated_at']}")
+        keys = set(row.keys())
+        if "source_version" in keys and row["source_version"]:
+            details.append(f"version={row['source_version']}")
+        if "freshness" in keys and row["freshness"]:
+            details.append(f"freshness={row['freshness']}")
+        if "indexed_at" in keys and row["indexed_at"]:
+            details.append(f"indexed={row['indexed_at']}")
         details.append(f"path={row['path']}")
         print("; ".join(details))
 
