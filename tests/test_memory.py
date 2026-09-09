@@ -234,6 +234,7 @@ class NativeMemoryTests(unittest.TestCase):
             "alpha", "mem-mislabelled", "workspace:beta", "isolation sentinel mislabelled"
         )
         self.assertIsNone(mem.index_atomic(path, self.root, mem.MODE_NATIVE))
+        self.assertNotIn(path, list(mem.iter_atomic_files(self.root, mem.MODE_NATIVE)))
         mem.rebuild(silent=True, root=self.root, mode=mem.MODE_NATIVE)
 
         conn, _ = mem.connect_db(self.root, mem.MODE_NATIVE)

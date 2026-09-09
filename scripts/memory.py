@@ -376,6 +376,8 @@ def iter_atomic_files(root: Optional[Path] = None, mode: Optional[str] = None) -
     for path in _iter_atomic_candidates(root, mode):
         try:
             infer_scope_from_path(path, root, mode)
+            meta, _ = parse_markdown(path)
+            _validated_atomic_scope(path, root, mode, meta)
         except (ValueError, OSError):
             continue
         yield path
