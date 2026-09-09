@@ -1,0 +1,438 @@
+name: Apply Task 2 workspace isolation
+
+on:
+  push:
+    branches: [codex/task-2-memory-workspace-isolation]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/task-2-memory-workspace-isolation
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply scoped isolation patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_region(text: str, start: str, end: str, replacement: str) -> str:
+              pattern = rf"(?ms)^def {re.escape(start)}\(.*?(?=^def {re.escape(end)}\()"
+              updated, count = re.subn(pattern, replacement.rstrip() + "\n\n\n", text, count=1)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one {start}..{end} region, found {count}")
+              return updated
+
+          memory_path = Path("scripts/memory.py")
+          text = memory_path.read_text(encoding="utf-8")
+
+          atomic_region = r'''
+          def _atomic_scope_from_relative_parts(parts: Tuple[str, ...], root: Path) -> str:
+              if len(parts) >= 3 and parts[:3] == ("operator", "memory", "atomic"):
+                  return "operator"
+              if len(parts) >= 4 and parts[0] == "workspaces" and parts[2:4] == ("memory", "atomic"):
+                  wid = parts[1]
+                  if wid not in workspace_ids(root):
+                      raise ValueError(f"Atomic memory belongs to unknown workspace: {wid}")
+                  return f"workspace:{wid}"
+              raise ValueError("Atomic memory path is outside authorized native memory roots")
+
+
+          def _iter_atomic_candidates(root: Path, mode: str) -> Iterable[Path]:
+              p = ensure_layout(root, mode)
+              if mode == MODE_STANDALONE:
+                  yield from sorted(p["memories"].rglob("*.md"))
+                  return
+
+              yield from sorted(p["operator_atomic"].rglob("*.md"))
+              for wid in workspace_ids(root):
+                  base = root / "workspaces" / wid / "memory" / "atomic"
+                  if base.exists():
+                      yield from sorted(base.rglob("*.md"))
+
+
+          def infer_scope_from_path(path: Path, root: Path, mode: str) -> str:
+              if mode == MODE_STANDALONE:
+                  return "global"
+
+              root_lexical = Path(os.path.abspath(root))
+              path_lexical = Path(os.path.abspath(path))
+              try:
+                  lexical_rel = path_lexical.relative_to(root_lexical)
+              except ValueError as exc:
+                  raise ValueError(f"Atomic memory path escapes repository root: {path}") from exc
+              lexical_scope = _atomic_scope_from_relative_parts(lexical_rel.parts, root)
+
+              try:
+                  resolved_root = root.resolve(strict=True)
+                  resolved_path = path.resolve(strict=True)
+              except (FileNotFoundError, OSError) as exc:
+                  raise ValueError(f"Atomic memory path cannot be resolved safely: {path}") from exc
+              if not resolved_path.is_file():
+                  raise ValueError(f"Atomic memory path is not a regular file: {path}")
+              try:
+                  resolved_rel = resolved_path.relative_to(resolved_root)
+              except ValueError as exc:
+                  raise ValueError(f"Atomic memory path resolves outside repository root: {path}") from exc
+
+              physical_scope = _atomic_scope_from_relative_parts(resolved_rel.parts, root)
+              if physical_scope != lexical_scope:
+                  raise ValueError(
+                      f"Atomic memory path crosses scope boundary: lexical {lexical_scope}, resolved {physical_scope}"
+                  )
+              return physical_scope
+
+
+          def _validated_atomic_scope(path: Path, root: Path, mode: str, meta: Dict[str, str]) -> str:
+              physical = infer_scope_from_path(path, root, mode)
+              if mode == MODE_STANDALONE:
+                  return meta.get("scope") or physical
+              raw_declared = (meta.get("scope") or "").strip()
+              if not raw_declared:
+                  return physical
+              declared = normalize_scope(raw_declared, root, mode)
+              if declared != physical:
+                  raise ValueError(f"Declared scope {declared} disagrees with physical scope {physical}")
+              return physical
+
+
+          def iter_atomic_files(root: Optional[Path] = None, mode: Optional[str] = None) -> Iterable[Path]:
+              root = root or repository_root()
+              mode = mode or detect_mode(root)
+              if mode == MODE_STANDALONE:
+                  yield from _iter_atomic_candidates(root, mode)
+                  return
+
+              for path in _iter_atomic_candidates(root, mode):
+                  try:
+                      infer_scope_from_path(path, root, mode)
+                  except (ValueError, OSError):
+                      continue
+                  yield path
+          '''
+          text = replace_region(text, "iter_atomic_files", "relpath", atomic_region)
+
+          index_region = r'''
+          def index_atomic(path: Path, root: Path, mode: str) -> Optional[Tuple]:
+              if mode == MODE_NATIVE:
+                  try:
+                      infer_scope_from_path(path, root, mode)
+                  except (ValueError, OSError):
+                      return None
+              try:
+                  meta, body = parse_markdown(path)
+              except OSError:
+                  return None
+              if not meta.get("id"):
+                  return None
+              text, why = extract_sections(body)
+              try:
+                  scope = _validated_atomic_scope(path, root, mode, meta)
+              except (ValueError, OSError):
+                  return None
+              return (
+                  meta.get("id", path.stem),
+                  "memory",
+                  relpath(path, root),
+                  meta.get("type", "fact"),
+                  scope,
+                  meta.get("status", "active"),
+                  float(meta.get("importance", "3") or 3),
+                  float(meta.get("confidence", "1") or 1),
+                  meta.get("created_at", ""),
+                  meta.get("updated_at", ""),
+                  meta.get("source", ""),
+                  meta.get("tags", ""),
+                  text,
+                  why,
+                  KIND_AUTHORITY["memory"],
+              )
+          '''
+          text = replace_region(text, "index_atomic", "index_document", index_region)
+
+          recall_region = r'''
+          def _indexed_memory_source_is_valid(row: sqlite3.Row, root: Path, mode: str) -> bool:
+              if mode != MODE_NATIVE or row["kind"] != "memory":
+                  return True
+              stored = Path(row["path"] or "")
+              if stored.is_absolute() or not stored.parts:
+                  return False
+              source = root / stored
+              try:
+                  physical = infer_scope_from_path(source, root, mode)
+                  meta, _ = parse_markdown(source)
+                  if meta.get("id") != row["id"]:
+                      return False
+                  validated = _validated_atomic_scope(source, root, mode, meta)
+              except (ValueError, OSError):
+                  return False
+              return validated == physical == row["scope"]
+
+
+          def recall(
+              query: str,
+              scope: Optional[str] = None,
+              limit: int = 8,
+              include_history: bool = False,
+              root: Optional[Path] = None,
+              mode: Optional[str] = None,
+              workspace: Optional[str] = None,
+              all_workspaces: bool = False,
+          ) -> List[sqlite3.Row]:
+              root = root or repository_root()
+              mode = mode or detect_mode(root)
+              p = ensure_layout(root, mode)
+              if not p["db"].exists():
+                  rebuild(silent=True, root=root, mode=mode)
+              conn, fts = connect_db(root, mode)
+              scopes, primary_scope = allowed_scopes(root, mode, scope, workspace, all_workspaces)
+
+              status_clause = "" if include_history else "AND i.status='active'"
+              scope_clause = ""
+              params: List[str] = []
+              if scopes:
+                  placeholders = ",".join("?" for _ in scopes)
+                  scope_clause = f"AND i.scope IN ({placeholders})"
+                  params.extend(scopes)
+
+              candidates: List[sqlite3.Row] = []
+              terms = tokenize(query)
+              used_fts = False
+              if fts and terms:
+                  fts_query = " OR ".join(f'"{t.replace(chr(34), "")}"' for t in terms[:12])
+                  try:
+                      sql = f"""
+                          SELECT i.* FROM item_fts f
+                          JOIN items i ON i.id=f.id
+                          WHERE item_fts MATCH ? {status_clause} {scope_clause}
+                          LIMIT 200
+                      """
+                      candidates = conn.execute(sql, [fts_query] + params).fetchall()
+                      used_fts = True
+                  except sqlite3.OperationalError:
+                      used_fts = False
+
+              if not used_fts:
+                  sql = f"""
+                      SELECT i.* FROM items i
+                      WHERE 1=1 {status_clause} {scope_clause}
+                      ORDER BY i.importance DESC, i.updated_at DESC
+                      LIMIT 2000
+                  """
+                  candidates = conn.execute(sql, params).fetchall()
+
+              candidates = [
+                  row
+                  for row in candidates
+                  if _indexed_memory_source_is_valid(row, root, mode) and row_matches_query(row, query)
+              ]
+              ranked = sorted(candidates, key=lambda r: custom_score(r, query, primary_scope), reverse=True)
+              conn.close()
+              return ranked[: max(1, min(50, limit))]
+          '''
+          text = replace_region(text, "recall", "update_meta", recall_region)
+
+          doctor_region = r'''
+          def doctor(root: Optional[Path] = None, mode: Optional[str] = None) -> int:
+              root = root or repository_root()
+              mode = mode or detect_mode(root)
+              p = ensure_layout(root, mode)
+              checks: List[Tuple[str, bool, str, bool]] = []
+              checks.append(("Detected mode", True, mode, True))
+
+              if mode == MODE_NATIVE:
+                  checks.append(("Canonical operator memory writable", os.access(p["operator_memory"], os.W_OK), relpath(p["operator_memory"], root), True))
+                  checks.append(("Derived index directory writable", os.access(p["db"].parent, os.W_OK), relpath(p["db"].parent, root), True))
+              else:
+                  checks.append(("Memory home exists", p["home"].is_dir(), str(p["home"]), True))
+                  checks.append(("Canonical store writable", os.access(p["home"], os.W_OK), str(p["home"]), True))
+
+              try:
+                  conn, fts = connect_db(root, mode)
+                  conn.execute("SELECT 1").fetchone()
+                  conn.close()
+                  checks.append(("SQLite available", True, sqlite3.sqlite_version, True))
+                  checks.append(("FTS5 available", fts, "fallback search works without it" if not fts else "enabled", False))
+              except Exception as exc:  # noqa: BLE001
+                  checks.append(("SQLite available", False, str(exc), True))
+                  fts = False
+
+              try:
+                  count = rebuild(silent=True, root=root, mode=mode)
+                  checks.append(("Index rebuild", True, f"{count} indexed item(s)", True))
+              except Exception as exc:  # noqa: BLE001
+                  checks.append(("Index rebuild", False, str(exc), True))
+
+              if mode == MODE_NATIVE:
+                  for path in _iter_atomic_candidates(root, mode):
+                      try:
+                          infer_scope_from_path(path, root, mode)
+                          meta, _ = parse_markdown(path)
+                          _validated_atomic_scope(path, root, mode, meta)
+                      except (ValueError, OSError) as exc:
+                          checks.append(("Workspace isolation", False, f"{path}: {exc}", True))
+                  checks.extend(integration_checks(root, mode))
+
+              checks.append(("Migration completed", p["migration"].exists(), "optional on fresh repositories", False))
+
+              print(f"AI-Verse Memory {VERSION}")
+              failures = 0
+              warnings = 0
+              for label, ok, detail, required in checks:
+                  if ok:
+                      mark = "[x]"
+                  elif required:
+                      mark = "[!]"
+                      failures += 1
+                  else:
+                      mark = "[~]"
+                      warnings += 1
+                  print(f"{mark} {label}: {detail}")
+              print(f"Doctor: {'PASS' if failures == 0 else 'FAIL'} ({warnings} warning(s))")
+              return 1 if failures else 0
+          '''
+          text = replace_region(text, "doctor", "status", doctor_region)
+          memory_path.write_text(text, encoding="utf-8")
+
+          tests_path = Path("tests/test_memory.py")
+          tests = tests_path.read_text(encoding="utf-8")
+          marker = '''    def test_current_context_and_decisions_are_indexed_in_place(self):\n'''
+          if tests.count(marker) != 1:
+              raise SystemExit("test insertion marker not found exactly once")
+          new_tests = r'''
+              def _write_native_atomic_fixture(self, workspace, mem_id, declared_scope, text):
+                  path = self.root / f"workspaces/{workspace}/memory/atomic/2026/09/{mem_id}.md"
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  path.write_text(
+                      "---\n"
+                      f"id: {mem_id}\n"
+                      "type: fact\n"
+                      f"scope: {declared_scope}\n"
+                      "status: active\n"
+                      "importance: 3\n"
+                      "confidence: 1\n"
+                      "created_at: 2026-09-09T00:00:00+00:00\n"
+                      "updated_at: 2026-09-09T00:00:00+00:00\n"
+                      "---\n\n"
+                      f"# Memory\n\n{text}\n",
+                      encoding="utf-8",
+                  )
+                  return path
+
+              def test_mislabelled_workspace_file_is_never_indexed_or_recalled(self):
+                  path = self._write_native_atomic_fixture(
+                      "alpha", "mem-mislabelled", "workspace:beta", "isolation sentinel mislabelled"
+                  )
+                  self.assertIsNone(mem.index_atomic(path, self.root, mem.MODE_NATIVE))
+                  mem.rebuild(silent=True, root=self.root, mode=mem.MODE_NATIVE)
+
+                  conn, _ = mem.connect_db(self.root, mem.MODE_NATIVE)
+                  indexed = conn.execute("SELECT id FROM items WHERE id='mem-mislabelled'").fetchone()
+                  conn.close()
+                  self.assertIsNone(indexed)
+                  beta_rows = mem.recall("isolation sentinel", workspace="beta", root=self.root, mode=mem.MODE_NATIVE)
+                  all_rows = mem.recall("isolation sentinel", all_workspaces=True, root=self.root, mode=mem.MODE_NATIVE)
+                  self.assertNotIn("mem-mislabelled", {r["id"] for r in beta_rows})
+                  self.assertNotIn("mem-mislabelled", {r["id"] for r in all_rows})
+
+              def test_recall_revalidates_declared_scope_after_indexing(self):
+                  mem_id, path, _ = mem.write_atomic(
+                      "post index isolation sentinel",
+                      "fact",
+                      "workspace:alpha",
+                      root=self.root,
+                      mode=mem.MODE_NATIVE,
+                  )
+                  mem.update_meta(path, {"scope": "workspace:beta"})
+
+                  alpha_rows = mem.recall("post index isolation", workspace="alpha", root=self.root, mode=mem.MODE_NATIVE)
+                  all_rows = mem.recall("post index isolation", all_workspaces=True, root=self.root, mode=mem.MODE_NATIVE)
+                  self.assertNotIn(mem_id, {r["id"] for r in alpha_rows})
+                  self.assertNotIn(mem_id, {r["id"] for r in all_rows})
+
+              def test_symlink_escape_is_never_indexed_or_recalled(self):
+                  outside = Path(self.tmp.name) / "outside-memory.md"
+                  outside.write_text(
+                      "---\n"
+                      "id: mem-escape\n"
+                      "type: fact\n"
+                      "scope: workspace:alpha\n"
+                      "status: active\n"
+                      "---\n\n"
+                      "# Memory\n\nexternal escape sentinel\n",
+                      encoding="utf-8",
+                  )
+                  link = self.root / "workspaces/alpha/memory/atomic/2026/09/mem-escape.md"
+                  link.parent.mkdir(parents=True, exist_ok=True)
+                  try:
+                      link.symlink_to(outside)
+                  except (OSError, NotImplementedError) as exc:
+                      self.skipTest(f"symlinks unavailable: {exc}")
+
+                  with self.assertRaises(ValueError):
+                      mem.infer_scope_from_path(link, self.root, mem.MODE_NATIVE)
+                  self.assertIsNone(mem.index_atomic(link, self.root, mem.MODE_NATIVE))
+                  mem.rebuild(silent=True, root=self.root, mode=mem.MODE_NATIVE)
+                  alpha_rows = mem.recall("external escape", workspace="alpha", root=self.root, mode=mem.MODE_NATIVE)
+                  all_rows = mem.recall("external escape", all_workspaces=True, root=self.root, mode=mem.MODE_NATIVE)
+                  self.assertNotIn("mem-escape", {r["id"] for r in alpha_rows})
+                  self.assertNotIn("mem-escape", {r["id"] for r in all_rows})
+
+              def test_cross_workspace_symlink_is_rejected(self):
+                  beta_id, beta_path, _ = mem.write_atomic(
+                      "cross workspace symlink sentinel",
+                      "fact",
+                      "workspace:beta",
+                      root=self.root,
+                      mode=mem.MODE_NATIVE,
+                  )
+                  alias = self.root / f"workspaces/alpha/memory/atomic/2026/09/{beta_id}.md"
+                  alias.parent.mkdir(parents=True, exist_ok=True)
+                  try:
+                      alias.symlink_to(beta_path)
+                  except (OSError, NotImplementedError) as exc:
+                      self.skipTest(f"symlinks unavailable: {exc}")
+
+                  with self.assertRaises(ValueError):
+                      mem.infer_scope_from_path(alias, self.root, mem.MODE_NATIVE)
+                  valid_files = {p.resolve() for p in mem.iter_atomic_files(self.root, mem.MODE_NATIVE)}
+                  self.assertIn(beta_path.resolve(), valid_files)
+                  mem.rebuild(silent=True, root=self.root, mode=mem.MODE_NATIVE)
+                  alpha_rows = mem.recall("cross workspace symlink", workspace="alpha", root=self.root, mode=mem.MODE_NATIVE)
+                  beta_rows = mem.recall("cross workspace symlink", workspace="beta", root=self.root, mode=mem.MODE_NATIVE)
+                  self.assertNotIn(beta_id, {r["id"] for r in alpha_rows})
+                  self.assertIn(beta_id, {r["id"] for r in beta_rows})
+
+              def test_doctor_reports_mislabelled_workspace_file(self):
+                  self._write_native_atomic_fixture(
+                      "alpha", "mem-doctor-mismatch", "workspace:beta", "doctor isolation sentinel"
+                  )
+                  self.assertEqual(mem.doctor(self.root, mem.MODE_NATIVE), 1)
+
+          '''
+          tests = tests.replace(marker, new_tests + marker, 1)
+          tests_path.write_text(tests, encoding="utf-8")
+          PY
+      - name: Compile and unit tests
+        run: |
+          python -m py_compile scripts/memory.py
+          python -m py_compile scripts/install.py
+          python -m unittest discover -s tests -v
+      - name: Commit Task 2 changes and remove helper workflow
+        shell: bash
+        run: |
+          git config user.name "AI-VERSE Task Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add scripts/memory.py tests/test_memory.py
+          git rm .github/workflows/task2-apply.yml
+          git commit -m "Fix Memory workspace isolation before index and recall"
+          git push origin HEAD:codex/task-2-memory-workspace-isolation
