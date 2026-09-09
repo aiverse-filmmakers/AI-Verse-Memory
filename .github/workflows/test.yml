@@ -68,23 +68,95 @@ jobs:
           assert (target / "CLAUDE.md").read_text().count("AI-VERSE-MEMORY:START") == 1
           subprocess.run([os.sys.executable, str(target / ".ai-verse-memory/memory.py"), "--root", str(target), "doctor"], check=True)
 
-      - name: AI-Verse OS v2 native install twice
+      - name: AI-Verse OS v2 native install twice leaves tracked OS clean
         shell: python
         run: |
-          import os, pathlib, shutil, subprocess, tempfile
+          import json, os, pathlib, shutil, subprocess, tempfile
           root = pathlib.Path.cwd()
           target = pathlib.Path(tempfile.mkdtemp())
           shutil.copytree(root / "tests/fixtures/ai-verse-os-v2", target, dirs_exist_ok=True)
+
+          subprocess.run(["git", "init"], cwd=target, check=True, capture_output=True)
+          subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=target, check=True)
+          subprocess.run(["git", "config", "user.name", "CI"], cwd=target, check=True)
+          subprocess.run(["git", "add", "."], cwd=target, check=True)
+          subprocess.run(["git", "commit", "-m", "baseline"], cwd=target, check=True, capture_output=True)
+
+          agents_before = (target / "AGENTS.md").read_text(encoding="utf-8")
+          registry_before = (target / "skills/registry.yaml").read_text(encoding="utf-8")
           cmd = [os.sys.executable, str(root / "scripts/install.py"), "--target", str(target), "--source-dir", str(root)]
           subprocess.run(cmd, check=True)
           subprocess.run(cmd, check=True)
+
           engine = target / "scripts/ai-verse-memory/memory.py"
           assert engine.exists()
           assert not (target / ".ai-verse-memory").exists()
-          assert (target / "AGENTS.md").read_text().count("AI-VERSE-MEMORY:START") == 1
-          assert "AI-VERSE-MEMORY:START" not in (target / "CLAUDE.md").read_text()
-          assert (target / "skills/registry.yaml").read_text().count("id: ai-verse-memory") == 1
+          assert (target / "AGENTS.md").read_text(encoding="utf-8") == agents_before
+          assert (target / "skills/registry.yaml").read_text(encoding="utf-8") == registry_before
+          assert "AI-VERSE-MEMORY:START" not in (target / "CLAUDE.md").read_text(encoding="utf-8")
+
+          local_registry = json.loads((target / ".aiverse/extensions/registry.json").read_text(encoding="utf-8"))
+          memory = local_registry["extensions"]["ai-verse-memory"]
+          assert memory["supported"] is True
+          assert memory["installed"] is True
+          assert memory["enabled"] is True
+          assert memory["engine"] == "scripts/ai-verse-memory/memory.py"
+
+          tracked = subprocess.run(
+              ["git", "status", "--porcelain", "--untracked-files=no"],
+              cwd=target,
+              check=True,
+              text=True,
+              capture_output=True,
+          ).stdout.strip()
+          assert tracked == "", tracked
+
           subprocess.run([os.sys.executable, str(engine), "--root", str(target), "remember", "--type", "state", "--workspace", "sample", "--text", "Native installer smoke memory"], check=True)
           recall = subprocess.run([os.sys.executable, str(engine), "--root", str(target), "recall", "smoke memory", "--workspace", "sample"], check=True, text=True, capture_output=True)
           assert "Native installer smoke memory" in recall.stdout
           subprocess.run([os.sys.executable, str(engine), "--root", str(target), "doctor"], check=True)
+
+      - name: Legacy Memory integration migrates back to clean tracked OS
+        shell: python
+        run: |
+          import importlib.util, os, pathlib, shutil, subprocess, tempfile
+          root = pathlib.Path.cwd()
+          spec = importlib.util.spec_from_file_location("installer_acceptance", root / "scripts/install.py")
+          installer = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(installer)
+
+          target = pathlib.Path(tempfile.mkdtemp())
+          shutil.copytree(root / "tests/fixtures/ai-verse-os-v2", target, dirs_exist_ok=True)
+          subprocess.run(["git", "init"], cwd=target, check=True, capture_output=True)
+          subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=target, check=True)
+          subprocess.run(["git", "config", "user.name", "CI"], cwd=target, check=True)
+          subprocess.run(["git", "add", "."], cwd=target, check=True)
+          subprocess.run(["git", "commit", "-m", "baseline"], cwd=target, check=True, capture_output=True)
+
+          installer.replace_marker_block(target / "AGENTS.md", installer.NATIVE_BLOCK)
+          registry = target / "skills/registry.yaml"
+          text = registry.read_text(encoding="utf-8")
+          text = text.replace("promotion_rule:", installer.LEGACY_REGISTRY_BLOCK + "\npromotion_rule:", 1)
+          registry.write_text(text, encoding="utf-8")
+
+          dirty_before = subprocess.run(
+              ["git", "status", "--porcelain", "--untracked-files=no"],
+              cwd=target,
+              check=True,
+              text=True,
+              capture_output=True,
+          ).stdout.strip()
+          assert dirty_before, "legacy integration should dirty tracked OS files"
+
+          cmd = [os.sys.executable, str(root / "scripts/install.py"), "--target", str(target), "--source-dir", str(root)]
+          subprocess.run(cmd, check=True)
+
+          tracked_after = subprocess.run(
+              ["git", "status", "--porcelain", "--untracked-files=no"],
+              cwd=target,
+              check=True,
+              text=True,
+              capture_output=True,
+          ).stdout.strip()
+          assert tracked_after == "", tracked_after
+          assert (target / ".aiverse/extensions/registry.json").exists()
