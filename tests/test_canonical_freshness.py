@@ -46,19 +46,19 @@ class CanonicalFreshnessAcceptanceTests(unittest.TestCase):
                 self.root / "operator/profile/preferences.md",
                 "operator",
                 None,
-                f"{prefix} profile sentinel",
+                f"{prefix}profiletoken",
             ),
             "context": (
                 self.root / "workspaces/alpha/context/CURRENT.md",
                 "workspace:alpha",
                 "alpha",
-                f"{prefix} context sentinel",
+                f"{prefix}contexttoken",
             ),
             "decision": (
                 self.root / "workspaces/alpha/decisions/log.md",
                 "workspace:alpha",
                 "alpha",
-                f"{prefix} decision sentinel",
+                f"{prefix}decisiontoken",
             ),
         }
 
@@ -82,25 +82,23 @@ class CanonicalFreshnessAcceptanceTests(unittest.TestCase):
         before_versions = {}
         for kind, (path, scope, workspace, old_text) in sources.items():
             relative = path.relative_to(self.root).as_posix()
-            row = self._row_for_path(relative)
-            self.assertIsNotNone(row)
-            before_versions[kind] = row["source_version"]
-            self.assertEqual(row["freshness"], "fresh")
-            self.assertTrue(row["source_identity"].startswith("sha256:"))
-            self.assertTrue(row["source_version"].startswith("sha256:"))
-            self.assertTrue(row["indexed_at"])
             old_rows = self._recall(old_text, scope, workspace)
-            self.assertTrue(any(r["path"] == relative for r in old_rows))
+            old_row = next(r for r in old_rows if r["path"] == relative)
+            before_versions[kind] = old_row["source_version"]
+            self.assertEqual(old_row["freshness"], "fresh")
+            self.assertTrue(old_row["source_identity"].startswith("sha256:"))
+            self.assertTrue(old_row["source_version"].startswith("sha256:"))
+            self.assertTrue(old_row["indexed_at"])
 
         for kind, (path, _, _, _) in sources.items():
-            path.write_text(f"# {kind.title()}\n\nnew {kind} sentinel\n", encoding="utf-8")
+            path.write_text(f"# {kind.title()}\n\nnew{kind}token\n", encoding="utf-8")
 
         for kind, (path, scope, workspace, old_text) in sources.items():
             relative = path.relative_to(self.root).as_posix()
-            new_rows = self._recall(f"new {kind} sentinel", scope, workspace)
+            new_rows = self._recall(f"new{kind}token", scope, workspace)
             current = [r for r in new_rows if r["path"] == relative]
             self.assertEqual(len(current), 1)
-            self.assertIn(f"new {kind} sentinel", current[0]["text"])
+            self.assertIn(f"new{kind}token", current[0]["text"])
             self.assertEqual(current[0]["freshness"], "fresh")
             self.assertNotEqual(current[0]["source_version"], before_versions[kind])
 
@@ -138,6 +136,7 @@ class CanonicalFreshnessAcceptanceTests(unittest.TestCase):
 
             conn, fts = mem.connect_db(self.root, mem.MODE_NATIVE)
             self.assertIsNone(conn.execute("SELECT id FROM items WHERE id=?", (row_id,)).fetchone())
+            self.assertIsNone(conn.execute("SELECT item_id FROM source_state WHERE item_id=?", (row_id,)).fetchone())
             if fts:
                 count = conn.execute("SELECT count(*) FROM item_fts WHERE id=?", (row_id,)).fetchone()[0]
                 self.assertEqual(count, 0)
@@ -145,14 +144,14 @@ class CanonicalFreshnessAcceptanceTests(unittest.TestCase):
 
     def test_atomic_history_is_not_live_refreshed_as_canonical_context(self):
         mem_id, path, _ = mem.write_atomic(
-            "historical atomic sentinel old",
+            "historicalatomictokenold",
             "fact",
             "workspace:alpha",
             root=self.root,
             mode=mem.MODE_NATIVE,
         )
         original = mem.recall(
-            "historical atomic sentinel old",
+            "historicalatomictokenold",
             workspace="alpha",
             root=self.root,
             mode=mem.MODE_NATIVE,
@@ -164,30 +163,30 @@ class CanonicalFreshnessAcceptanceTests(unittest.TestCase):
         meta, _ = mem.parse_markdown(path)
         path.write_text(
             mem.render_frontmatter(meta)
-            + "\n\n# Memory\n\nhistorical atomic sentinel manually changed\n",
+            + "\n\n# Memory\n\nhistoricalatomictokenchanged\n",
             encoding="utf-8",
         )
 
         old_rows = mem.recall(
-            "historical atomic sentinel old",
+            "historicalatomictokenold",
             workspace="alpha",
             root=self.root,
             mode=mem.MODE_NATIVE,
         )
         old_row = next(r for r in old_rows if r["id"] == mem_id)
-        self.assertIn("historical atomic sentinel old", old_row["text"])
+        self.assertIn("historicalatomictokenold", old_row["text"])
         self.assertEqual(old_row["source_version"], indexed_version)
         self.assertEqual(old_row["freshness"], "historical")
 
         changed_rows = mem.recall(
-            "manually changed",
+            "historicalatomictokenchanged",
             workspace="alpha",
             root=self.root,
             mode=mem.MODE_NATIVE,
         )
         self.assertFalse(any(r["id"] == mem_id for r in changed_rows))
 
-    def test_existing_index_schema_is_upgraded_without_manual_rebuild(self):
+    def test_existing_index_gets_source_state_without_manual_rebuild(self):
         db = mem.paths(self.root, mem.MODE_NATIVE)["db"]
         db.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(db)
@@ -216,9 +215,12 @@ class CanonicalFreshnessAcceptanceTests(unittest.TestCase):
         conn.close()
 
         conn, _ = mem.connect_db(self.root, mem.MODE_NATIVE)
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(items)").fetchall()}
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(source_state)").fetchall()}
         conn.close()
-        self.assertTrue({"source_identity", "source_version", "freshness", "indexed_at"} <= columns)
+        self.assertEqual(
+            columns,
+            {"item_id", "source_identity", "source_version", "freshness", "indexed_at"},
+        )
 
 
 if __name__ == "__main__":
