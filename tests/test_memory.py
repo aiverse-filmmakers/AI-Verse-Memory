@@ -209,6 +209,116 @@ class NativeMemoryTests(unittest.TestCase):
         all_ids = {r["id"] for r in all_rows}
         self.assertIn(beta_id, all_ids)
 
+
+    def _write_native_atomic_fixture(self, workspace, mem_id, declared_scope, text):
+        path = self.root / f"workspaces/{workspace}/memory/atomic/2026/09/{mem_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "---\n"
+            f"id: {mem_id}\n"
+            "type: fact\n"
+            f"scope: {declared_scope}\n"
+            "status: active\n"
+            "importance: 3\n"
+            "confidence: 1\n"
+            "created_at: 2026-09-09T00:00:00+00:00\n"
+            "updated_at: 2026-09-09T00:00:00+00:00\n"
+            "---\n\n"
+            f"# Memory\n\n{text}\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_mislabelled_workspace_file_is_never_indexed_or_recalled(self):
+        path = self._write_native_atomic_fixture(
+            "alpha", "mem-mislabelled", "workspace:beta", "isolation sentinel mislabelled"
+        )
+        self.assertIsNone(mem.index_atomic(path, self.root, mem.MODE_NATIVE))
+        mem.rebuild(silent=True, root=self.root, mode=mem.MODE_NATIVE)
+
+        conn, _ = mem.connect_db(self.root, mem.MODE_NATIVE)
+        indexed = conn.execute("SELECT id FROM items WHERE id='mem-mislabelled'").fetchone()
+        conn.close()
+        self.assertIsNone(indexed)
+        beta_rows = mem.recall("isolation sentinel", workspace="beta", root=self.root, mode=mem.MODE_NATIVE)
+        all_rows = mem.recall("isolation sentinel", all_workspaces=True, root=self.root, mode=mem.MODE_NATIVE)
+        self.assertNotIn("mem-mislabelled", {r["id"] for r in beta_rows})
+        self.assertNotIn("mem-mislabelled", {r["id"] for r in all_rows})
+
+    def test_recall_revalidates_declared_scope_after_indexing(self):
+        mem_id, path, _ = mem.write_atomic(
+            "post index isolation sentinel",
+            "fact",
+            "workspace:alpha",
+            root=self.root,
+            mode=mem.MODE_NATIVE,
+        )
+        mem.update_meta(path, {"scope": "workspace:beta"})
+
+        alpha_rows = mem.recall("post index isolation", workspace="alpha", root=self.root, mode=mem.MODE_NATIVE)
+        all_rows = mem.recall("post index isolation", all_workspaces=True, root=self.root, mode=mem.MODE_NATIVE)
+        self.assertNotIn(mem_id, {r["id"] for r in alpha_rows})
+        self.assertNotIn(mem_id, {r["id"] for r in all_rows})
+
+    def test_symlink_escape_is_never_indexed_or_recalled(self):
+        outside = Path(self.tmp.name) / "outside-memory.md"
+        outside.write_text(
+            "---\n"
+            "id: mem-escape\n"
+            "type: fact\n"
+            "scope: workspace:alpha\n"
+            "status: active\n"
+            "---\n\n"
+            "# Memory\n\nexternal escape sentinel\n",
+            encoding="utf-8",
+        )
+        link = self.root / "workspaces/alpha/memory/atomic/2026/09/mem-escape.md"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            link.symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+
+        with self.assertRaises(ValueError):
+            mem.infer_scope_from_path(link, self.root, mem.MODE_NATIVE)
+        self.assertIsNone(mem.index_atomic(link, self.root, mem.MODE_NATIVE))
+        mem.rebuild(silent=True, root=self.root, mode=mem.MODE_NATIVE)
+        alpha_rows = mem.recall("external escape", workspace="alpha", root=self.root, mode=mem.MODE_NATIVE)
+        all_rows = mem.recall("external escape", all_workspaces=True, root=self.root, mode=mem.MODE_NATIVE)
+        self.assertNotIn("mem-escape", {r["id"] for r in alpha_rows})
+        self.assertNotIn("mem-escape", {r["id"] for r in all_rows})
+
+    def test_cross_workspace_symlink_is_rejected(self):
+        beta_id, beta_path, _ = mem.write_atomic(
+            "cross workspace symlink sentinel",
+            "fact",
+            "workspace:beta",
+            root=self.root,
+            mode=mem.MODE_NATIVE,
+        )
+        alias = self.root / f"workspaces/alpha/memory/atomic/2026/09/{beta_id}.md"
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            alias.symlink_to(beta_path)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+
+        with self.assertRaises(ValueError):
+            mem.infer_scope_from_path(alias, self.root, mem.MODE_NATIVE)
+        valid_files = {p.resolve() for p in mem.iter_atomic_files(self.root, mem.MODE_NATIVE)}
+        self.assertIn(beta_path.resolve(), valid_files)
+        mem.rebuild(silent=True, root=self.root, mode=mem.MODE_NATIVE)
+        alpha_rows = mem.recall("cross workspace symlink", workspace="alpha", root=self.root, mode=mem.MODE_NATIVE)
+        beta_rows = mem.recall("cross workspace symlink", workspace="beta", root=self.root, mode=mem.MODE_NATIVE)
+        self.assertNotIn(beta_id, {r["id"] for r in alpha_rows})
+        self.assertIn(beta_id, {r["id"] for r in beta_rows})
+
+    def test_doctor_reports_mislabelled_workspace_file(self):
+        self._write_native_atomic_fixture(
+            "alpha", "mem-doctor-mismatch", "workspace:beta", "doctor isolation sentinel"
+        )
+        self.assertEqual(mem.doctor(self.root, mem.MODE_NATIVE), 1)
+
     def test_current_context_and_decisions_are_indexed_in_place(self):
         rows = mem.recall("supervised", workspace="alpha", root=self.root, mode=mem.MODE_NATIVE)
         paths = {r["path"].replace("\\", "/") for r in rows}

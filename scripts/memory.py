@@ -296,9 +296,19 @@ def atomic_path(mem_id: str, created_at: str, scope: str, root: Optional[Path] =
     return folder / f"{mem_id}.md"
 
 
-def iter_atomic_files(root: Optional[Path] = None, mode: Optional[str] = None) -> Iterable[Path]:
-    root = root or repository_root()
-    mode = mode or detect_mode(root)
+
+def _atomic_scope_from_relative_parts(parts: Tuple[str, ...], root: Path) -> str:
+    if len(parts) >= 3 and parts[:3] == ("operator", "memory", "atomic"):
+        return "operator"
+    if len(parts) >= 4 and parts[0] == "workspaces" and parts[2:4] == ("memory", "atomic"):
+        wid = parts[1]
+        if wid not in workspace_ids(root):
+            raise ValueError(f"Atomic memory belongs to unknown workspace: {wid}")
+        return f"workspace:{wid}"
+    raise ValueError("Atomic memory path is outside authorized native memory roots")
+
+
+def _iter_atomic_candidates(root: Path, mode: str) -> Iterable[Path]:
     p = ensure_layout(root, mode)
     if mode == MODE_STANDALONE:
         yield from sorted(p["memories"].rglob("*.md"))
@@ -314,14 +324,61 @@ def iter_atomic_files(root: Optional[Path] = None, mode: Optional[str] = None) -
 def infer_scope_from_path(path: Path, root: Path, mode: str) -> str:
     if mode == MODE_STANDALONE:
         return "global"
+
+    root_lexical = Path(os.path.abspath(root))
+    path_lexical = Path(os.path.abspath(path))
     try:
-        rel = path.resolve().relative_to(root.resolve())
-    except ValueError:
-        return "operator"
-    parts = rel.parts
-    if len(parts) >= 2 and parts[0] == "workspaces":
-        return f"workspace:{parts[1]}"
-    return "operator"
+        lexical_rel = path_lexical.relative_to(root_lexical)
+    except ValueError as exc:
+        raise ValueError(f"Atomic memory path escapes repository root: {path}") from exc
+    lexical_scope = _atomic_scope_from_relative_parts(lexical_rel.parts, root)
+
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise ValueError(f"Atomic memory path cannot be resolved safely: {path}") from exc
+    if not resolved_path.is_file():
+        raise ValueError(f"Atomic memory path is not a regular file: {path}")
+    try:
+        resolved_rel = resolved_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"Atomic memory path resolves outside repository root: {path}") from exc
+
+    physical_scope = _atomic_scope_from_relative_parts(resolved_rel.parts, root)
+    if physical_scope != lexical_scope:
+        raise ValueError(
+            f"Atomic memory path crosses scope boundary: lexical {lexical_scope}, resolved {physical_scope}"
+        )
+    return physical_scope
+
+
+def _validated_atomic_scope(path: Path, root: Path, mode: str, meta: Dict[str, str]) -> str:
+    physical = infer_scope_from_path(path, root, mode)
+    if mode == MODE_STANDALONE:
+        return meta.get("scope") or physical
+    raw_declared = (meta.get("scope") or "").strip()
+    if not raw_declared:
+        return physical
+    declared = normalize_scope(raw_declared, root, mode)
+    if declared != physical:
+        raise ValueError(f"Declared scope {declared} disagrees with physical scope {physical}")
+    return physical
+
+
+def iter_atomic_files(root: Optional[Path] = None, mode: Optional[str] = None) -> Iterable[Path]:
+    root = root or repository_root()
+    mode = mode or detect_mode(root)
+    if mode == MODE_STANDALONE:
+        yield from _iter_atomic_candidates(root, mode)
+        return
+
+    for path in _iter_atomic_candidates(root, mode):
+        try:
+            infer_scope_from_path(path, root, mode)
+        except (ValueError, OSError):
+            continue
+        yield path
 
 
 def relpath(path: Path, root: Optional[Path] = None) -> str:
@@ -375,16 +432,24 @@ def connect_db(root: Optional[Path] = None, mode: Optional[str] = None, reset: b
     return conn, fts
 
 
+
 def index_atomic(path: Path, root: Path, mode: str) -> Optional[Tuple]:
-    meta, body = parse_markdown(path)
+    if mode == MODE_NATIVE:
+        try:
+            infer_scope_from_path(path, root, mode)
+        except (ValueError, OSError):
+            return None
+    try:
+        meta, body = parse_markdown(path)
+    except OSError:
+        return None
     if not meta.get("id"):
         return None
     text, why = extract_sections(body)
-    scope = meta.get("scope") or infer_scope_from_path(path, root, mode)
-    if mode == MODE_NATIVE:
-        physical = infer_scope_from_path(path, root, mode)
-        if scope in {"global", "operator"}:
-            scope = physical if physical.startswith("workspace:") else "operator"
+    try:
+        scope = _validated_atomic_scope(path, root, mode, meta)
+    except (ValueError, OSError):
+        return None
     return (
         meta.get("id", path.stem),
         "memory",
@@ -662,6 +727,25 @@ def custom_score(row: sqlite3.Row, query: str, primary_scope: Optional[str]) -> 
     return score
 
 
+
+def _indexed_memory_source_is_valid(row: sqlite3.Row, root: Path, mode: str) -> bool:
+    if mode != MODE_NATIVE or row["kind"] != "memory":
+        return True
+    stored = Path(row["path"] or "")
+    if stored.is_absolute() or not stored.parts:
+        return False
+    source = root / stored
+    try:
+        physical = infer_scope_from_path(source, root, mode)
+        meta, _ = parse_markdown(source)
+        if meta.get("id") != row["id"]:
+            return False
+        validated = _validated_atomic_scope(source, root, mode, meta)
+    except (ValueError, OSError):
+        return False
+    return validated == physical == row["scope"]
+
+
 def recall(
     query: str,
     scope: Optional[str] = None,
@@ -714,7 +798,11 @@ def recall(
         """
         candidates = conn.execute(sql, params).fetchall()
 
-    candidates = [row for row in candidates if row_matches_query(row, query)]
+    candidates = [
+        row
+        for row in candidates
+        if _indexed_memory_source_is_valid(row, root, mode) and row_matches_query(row, query)
+    ]
     ranked = sorted(candidates, key=lambda r: custom_score(r, query, primary_scope), reverse=True)
     conn.close()
     return ranked[: max(1, min(50, limit))]
@@ -988,6 +1076,7 @@ def integration_checks(root: Path, mode: str) -> List[Tuple[str, bool, str, bool
     return checks
 
 
+
 def doctor(root: Optional[Path] = None, mode: Optional[str] = None) -> int:
     root = root or repository_root()
     mode = mode or detect_mode(root)
@@ -1019,12 +1108,13 @@ def doctor(root: Optional[Path] = None, mode: Optional[str] = None) -> int:
         checks.append(("Index rebuild", False, str(exc), True))
 
     if mode == MODE_NATIVE:
-        for path in iter_atomic_files(root, mode):
-            meta, _ = parse_markdown(path)
-            physical = infer_scope_from_path(path, root, mode)
-            declared = normalize_scope(meta.get("scope") or physical, root, mode)
-            if declared != physical:
-                checks.append(("Workspace isolation", False, f"{relpath(path, root)} declares {declared} but lives in {physical}", True))
+        for path in _iter_atomic_candidates(root, mode):
+            try:
+                infer_scope_from_path(path, root, mode)
+                meta, _ = parse_markdown(path)
+                _validated_atomic_scope(path, root, mode, meta)
+            except (ValueError, OSError) as exc:
+                checks.append(("Workspace isolation", False, f"{path}: {exc}", True))
         checks.extend(integration_checks(root, mode))
 
     checks.append(("Migration completed", p["migration"].exists(), "optional on fresh repositories", False))
