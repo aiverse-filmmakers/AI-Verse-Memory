@@ -160,3 +160,60 @@ jobs:
           ).stdout.strip()
           assert tracked_after == "", tracked_after
           assert (target / ".aiverse/extensions/registry.json").exists()
+
+  os-update-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Current OS then Memory then OS update
+        shell: bash
+        run: |
+          set -euo pipefail
+          MEMORY_ROOT="$PWD"
+          TARGET="$RUNNER_TEMP/ai-verse-os-current"
+          rm -rf "$TARGET"
+          git clone --depth 1 https://github.com/aiverse-filmmakers/AI-Verse-OS.git "$TARGET"
+
+          python "$MEMORY_ROOT/scripts/install.py" --target "$TARGET" --source-dir "$MEMORY_ROOT"
+
+          test -z "$(git -C "$TARGET" status --porcelain --untracked-files=no)"
+          test -f "$TARGET/.aiverse/extensions/registry.json"
+          git -C "$TARGET" check-ignore -q .aiverse/extensions/registry.json
+
+          node "$TARGET/bin/ai-verse-os.mjs" update --dir "$TARGET"
+
+          test -z "$(git -C "$TARGET" status --porcelain --untracked-files=no)"
+          test -f "$TARGET/.aiverse/extensions/registry.json"
+          grep -Fq '.aiverse/extensions/registry.json' "$TARGET/AGENTS.md"
+          test -f "$TARGET/scripts/ai-verse-memory/memory.py"
+
+      - name: Memory on pre-registry OS then OS update forward
+        shell: bash
+        run: |
+          set -euo pipefail
+          MEMORY_ROOT="$PWD"
+          TARGET="$RUNNER_TEMP/ai-verse-os-pre-registry"
+          rm -rf "$TARGET"
+          git clone https://github.com/aiverse-filmmakers/AI-Verse-OS.git "$TARGET"
+          git -C "$TARGET" checkout -b pre-registry a7849c01b71b184c4c8f452e6d07dd240c1d4c3e
+
+          python "$MEMORY_ROOT/scripts/install.py" --target "$TARGET" --source-dir "$MEMORY_ROOT"
+
+          test -z "$(git -C "$TARGET" status --porcelain --untracked-files=no)"
+          test -f "$TARGET/.aiverse/extensions/registry.json"
+          ! grep -Fq '.aiverse/extensions/registry.json' "$TARGET/AGENTS.md"
+
+          node "$TARGET/bin/ai-verse-os.mjs" update --dir "$TARGET"
+
+          test -z "$(git -C "$TARGET" status --porcelain --untracked-files=no)"
+          test -f "$TARGET/.aiverse/extensions/registry.json"
+          git -C "$TARGET" check-ignore -q .aiverse/extensions/registry.json
+          grep -Fq '.aiverse/extensions/registry.json' "$TARGET/AGENTS.md"
+          test -f "$TARGET/scripts/ai-verse-memory/memory.py"
