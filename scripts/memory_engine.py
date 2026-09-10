@@ -60,6 +60,124 @@ KIND_AUTHORITY = {
     "memory": 2.5,
 }
 
+_OPERATIONAL_CURRENT_HEADINGS = {
+    "operator": {
+        "active workspaces",
+        "pending decisions",
+        "current constraints",
+        "constraints",
+        "constraints / approvals",
+        "current state",
+        "current facts",
+        "next useful actions",
+        "pointers",
+        "source pointers",
+        "connection state",
+        "execution state",
+    },
+    "workspace": {
+        "current state",
+        "next useful actions",
+        "pending decisions",
+        "constraints / approvals",
+        "current constraints",
+        "constraints",
+        "pointers",
+        "source pointers",
+        "connection state",
+        "execution state",
+    },
+}
+
+
+def _direction_owner_state(root: Path, scope: str) -> Tuple[str, Optional[Dict[str, object]]]:
+    """Read the OS-owned direction marker without creating a parallel authority store."""
+    marker = root / ".aiverse" / "direction" / "ownership.json"
+    for candidate, label in (
+        (root / ".aiverse", ".aiverse directory"),
+        (root / ".aiverse" / "direction", "direction ownership directory"),
+        (marker, "direction ownership file"),
+    ):
+        if candidate.exists() and candidate.is_symlink():
+            raise ValueError(f"{label} must not be a symlink")
+    if not marker.exists():
+        return "os", None
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid direction ownership registry: {exc}") from exc
+    if not isinstance(data, dict) or data.get("schema_version") != 1 or not isinstance(data.get("scopes"), dict):
+        raise ValueError("unsupported or malformed direction ownership registry")
+    for registered_scope, registered_record in data["scopes"].items():
+        if not isinstance(registered_scope, str) or not isinstance(registered_record, dict):
+            raise ValueError("invalid direction ownership record")
+        if registered_record.get("owner") not in {"os", "brain"}:
+            raise ValueError(f"invalid direction ownership record for {registered_scope}")
+    record = data["scopes"].get(scope)
+    if record is None:
+        return "os", None
+    return str(record["owner"]), dict(record)
+
+
+def _normalize_current_heading(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower())
+
+
+def _operational_current_projection(text: str, scope: str) -> str:
+    kind = "operator" if scope == "operator" else "workspace"
+    allowed = _OPERATIONAL_CURRENT_HEADINGS[kind]
+    metadata: List[str] = []
+    sections: List[Tuple[str, List[str]]] = []
+    current_heading: Optional[str] = None
+    current_lines: List[str] = []
+
+    for line in text.splitlines():
+        match = re.match(r"^##\s+(.+?)\s*$", line)
+        if match:
+            if current_heading is not None:
+                sections.append((current_heading, current_lines))
+            current_heading = match.group(1).strip()
+            current_lines = []
+            continue
+        if current_heading is not None:
+            current_lines.append(line)
+        elif re.match(r"^Last reviewed:\s*.+", line.strip(), flags=re.IGNORECASE):
+            metadata.append(line.strip())
+    if current_heading is not None:
+        sections.append((current_heading, current_lines))
+
+    output: List[str] = list(metadata)
+    for heading, lines in sections:
+        if _normalize_current_heading(heading) not in allowed:
+            continue
+        if output:
+            output.append("")
+        output.append(f"## {heading}")
+        output.extend(lines)
+    rendered = "\n".join(output).strip()
+    return f"{rendered}\n" if rendered else ""
+
+
+def _ownership_aware_current_text(root: Path, scope: str, text: str) -> str:
+    owner, _ = _direction_owner_state(root, scope)
+    if owner == "os":
+        return text
+    return _operational_current_projection(text, scope)
+
+
+def _canonical_source_version(path: Path, root: Path, row: Sequence, mode: str) -> str:
+    source_version = _source_version(path)
+    if mode != MODE_NATIVE or str(row[1]) != "context" or Path(str(row[2])).name != "CURRENT.md":
+        return source_version
+    owner, record = _direction_owner_state(root, str(row[4]))
+    ownership = {"owner": owner, "record": record if owner == "brain" else None}
+    payload = (
+        source_version
+        + "\n"
+        + json.dumps(ownership, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -562,7 +680,10 @@ def index_document(
         else:
             meta = {}
             body = path.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
+        if mode == MODE_NATIVE and kind == "context" and path.name == "CURRENT.md":
+            body = _ownership_aware_current_text(root, scope, body)
+    except (OSError, ValueError):
+        # A malformed/unsafe direction marker must never reactivate frozen OS strategy.
         return None
     stored_path = _lexical_relative_path(path, root) if mode == MODE_NATIVE else relpath(path, root)
     doc_hash = hashlib.sha1(stored_path.encode("utf-8")).hexdigest()[:12]
@@ -655,11 +776,16 @@ def _delete_index_ids(conn: sqlite3.Connection, fts: bool, item_ids: Sequence[st
     return len(ids)
 
 
-def _source_state_for_row(row: Tuple, root: Path, freshness: str) -> Optional[Tuple[str, str, str, str, str]]:
+def _source_state_for_row(
+    row: Tuple,
+    root: Path,
+    freshness: str,
+    mode: str = MODE_STANDALONE,
+) -> Optional[Tuple[str, str, str, str, str]]:
     source = root / str(row[2])
     try:
-        version = _source_version(source)
-    except OSError:
+        version = _canonical_source_version(source, root, row, mode)
+    except (OSError, ValueError):
         return None
     return (
         str(row[0]),
@@ -717,7 +843,12 @@ def rebuild(silent: bool = False, root: Optional[Path] = None, mode: Optional[st
     if mode == MODE_NATIVE:
         states = []
         for row in rows:
-            state = _source_state_for_row(row, root, "historical" if row[1] == "memory" else "fresh")
+            state = _source_state_for_row(
+                row,
+                root,
+                "historical" if row[1] == "memory" else "fresh",
+                mode,
+            )
             if state:
                 states.append(state)
         _upsert_source_states(conn, states)
@@ -775,7 +906,7 @@ def _refresh_native_canonical_sources(conn: sqlite3.Connection, fts: bool, root:
         row = index_document(path, root, kind, scope, importance, mode)
         if not row:
             continue
-        state = _source_state_for_row(row, root, "fresh")
+        state = _source_state_for_row(row, root, "fresh", mode)
         if not state:
             continue
         current_rows.append(row)
