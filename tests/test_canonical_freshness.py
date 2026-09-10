@@ -73,6 +73,81 @@ class CanonicalFreshnessAcceptanceTests(unittest.TestCase):
         conn.close()
         return row
 
+    def _write_direction_owner(self, scope: str, owner: str, brain_refs=None):
+        marker = self.root / ".aiverse/direction/ownership.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            __import__("json").dumps(
+                {
+                    "schema_version": 1,
+                    "scopes": {
+                        scope: {
+                            "owner": owner,
+                            "state": "active",
+                            "handover_id": "handover-test",
+                            "brain_refs": list(brain_refs or []),
+                        }
+                    },
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def test_direction_handover_refreshes_unchanged_current_and_never_reactivates_old_strategy(self):
+        current = self.root / "operator/context/CURRENT.md"
+        current.write_text(
+            "# Current Operator Context\n\n"
+            "## Current priorities\n\n"
+            "- Launch old product.\n\n"
+            "## Current state\n\n"
+            "- operational-sentinel remains current.\n",
+            encoding="utf-8",
+        )
+        mem.rebuild(silent=True, root=self.root, mode=mem.MODE_NATIVE)
+
+        relative = current.relative_to(self.root).as_posix()
+        before_rows = self._recall("Launch old product", "operator", None)
+        before = next(row for row in before_rows if row["path"] == relative)
+        self.assertEqual(before["status"], "active")
+        self.assertEqual(before["freshness"], "fresh")
+        before_version = before["source_version"]
+
+        # Brain handover changes only the ownership marker. CURRENT.md bytes stay frozen.
+        self._write_direction_owner(
+            "operator",
+            "brain",
+            ["brain:intent:new-product"],
+        )
+
+        old_rows = self._recall("Launch old product", "operator", None)
+        self.assertFalse(any(row["path"] == relative for row in old_rows))
+
+        operational_rows = self._recall("operational-sentinel", "operator", None)
+        active = next(row for row in operational_rows if row["path"] == relative)
+        self.assertEqual(active["kind"], "context")
+        self.assertEqual(active["status"], "active")
+        self.assertEqual(active["freshness"], "fresh")
+        self.assertNotEqual(active["source_version"], before_version)
+        self.assertNotIn("Launch old product", active["text"])
+        self.assertIn("operational-sentinel", active["text"])
+        handover_version = active["source_version"]
+
+        # A later Brain goal replacement/supersession also changes ownership evidence
+        # without editing frozen CURRENT.md. It must never make the old OS goal current.
+        self._write_direction_owner(
+            "operator",
+            "brain",
+            ["brain:intent:replacement-product"],
+        )
+        after_change = self._recall("operational-sentinel", "operator", None)
+        active_after_change = next(row for row in after_change if row["path"] == relative)
+        self.assertNotEqual(active_after_change["source_version"], handover_version)
+        self.assertNotIn("Launch old product", active_after_change["text"])
+        old_after_change = self._recall("Launch old product", "operator", None)
+        self.assertFalse(any(row["path"] == relative for row in old_after_change))
+
     def test_next_recall_refreshes_edited_profile_context_and_decision(self):
         sources = self._canonical_sources("old")
         for kind, (path, _, _, text) in sources.items():
