@@ -28,13 +28,16 @@ fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-URL="https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main/scripts/install.py"
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$URL" -o "$TMP/install.py"
-elif command -v wget >/dev/null 2>&1; then
-  wget -q "$URL" -O "$TMP/install.py"
-else
-  printf 'AI-Verse Memory install error: curl or wget is required for remote installation.\n' >&2
-  exit 1
-fi
+BASE="https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main/scripts"
+for FILE in install.py install_engine.py os_compat.py; do
+  URL="$BASE/$FILE"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$URL" -o "$TMP/$FILE"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "$URL" -O "$TMP/$FILE"
+  else
+    printf 'AI-Verse Memory install error: curl or wget is required for remote installation.\n' >&2
+    exit 1
+  fi
+done
 "$PYTHON" "$TMP/install.py" --target "$TARGET"
