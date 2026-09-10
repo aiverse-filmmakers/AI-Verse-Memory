@@ -20,7 +20,8 @@ class InstallerLogicTests(unittest.TestCase):
             (root / "AI-VERSE.yaml").write_text('schema_version: "2.0"\narchitecture: unified-workspace\n', encoding="utf-8")
             self.assertTrue(installer.detect_native(root))
             (root / "AI-VERSE.yaml").write_text('schema_version: "1.0"\narchitecture: other\n', encoding="utf-8")
-            self.assertFalse(installer.detect_native(root))
+            with self.assertRaises(RuntimeError):
+                installer.detect_native(root)
 
     def test_marker_replacement_is_idempotent_for_standalone_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
