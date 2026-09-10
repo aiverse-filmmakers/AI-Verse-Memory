@@ -30,14 +30,16 @@ if ($UseLocal) {
     exit 0
 }
 
-# `irm <install.ps1> | iex` has no PSScriptRoot. In that case download only the
-# neutral Python installer, which then fetches the versioned package files.
+# `irm <install.ps1> | iex` has no PSScriptRoot. Download the installer entrypoint,
+# stable installer payload, and shared compatibility classifier together.
 $Temp = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-verse-memory-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $Temp | Out-Null
 try {
-    $Installer = Join-Path $Temp "install.py"
-    Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main/scripts/install.py" -OutFile $Installer
-    Run-Python @($Installer, "--target", $Target)
+    $Base = "https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main/scripts"
+    foreach ($File in @("install.py", "install_engine.py", "os_compat.py")) {
+        Invoke-WebRequest -UseBasicParsing -Uri "$Base/$File" -OutFile (Join-Path $Temp $File)
+    }
+    Run-Python @((Join-Path $Temp "install.py"), "--target", $Target)
 } finally {
     Remove-Item -Recurse -Force $Temp -ErrorAction SilentlyContinue
 }
