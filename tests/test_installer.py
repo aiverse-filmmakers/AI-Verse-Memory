@@ -129,6 +129,70 @@ class InstallerLogicTests(unittest.TestCase):
             warnings = [item for item in results if item.startswith("warning:")]
             self.assertGreaterEqual(len(warnings), 2)
 
+
+    def test_registry_lock_blocks_concurrent_memory_writer_without_losing_sibling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry = root / installer.LOCAL_REGISTRY
+            registry.parent.mkdir(parents=True)
+            registry.write_text(
+                json.dumps({
+                    "schema_version": "1.0",
+                    "extensions": {"ai-verse-data": {"id": "ai-verse-data", "custom": "keep"}},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            lock = root / installer.LOCAL_REGISTRY_LOCK
+            lock.write_text('{"extension_id":"other"}\n', encoding="utf-8")
+            before = registry.read_bytes()
+
+            with self.assertRaises(RuntimeError):
+                installer.register_local_extension(root)
+
+            self.assertEqual(registry.read_bytes(), before)
+            self.assertEqual(
+                json.loads(registry.read_text(encoding="utf-8"))["extensions"]["ai-verse-data"]["custom"],
+                "keep",
+            )
+
+    def test_disable_enable_and_detach_preserve_canonical_memory_and_siblings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "operator" / "memory" / "atomic").mkdir(parents=True)
+            (root / "workspaces").mkdir()
+            (root / "AI-VERSE.yaml").write_text(
+                'schema_version: "2.0"\narchitecture: unified-workspace\n',
+                encoding="utf-8",
+            )
+            canonical = root / "operator" / "memory" / "atomic" / "keep.md"
+            canonical.write_text("# Memory\n\nkeep forever\n", encoding="utf-8")
+            registry = root / installer.LOCAL_REGISTRY
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_text(
+                json.dumps({
+                    "schema_version": "1.0",
+                    "extensions": {"ai-verse-data": {"id": "ai-verse-data", "enabled": True}},
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            installer.register_local_extension(root)
+            installer.disable_native(root)
+            payload = json.loads(registry.read_text(encoding="utf-8"))
+            self.assertFalse(payload["extensions"]["ai-verse-memory"]["enabled"])
+            self.assertIn("ai-verse-data", payload["extensions"])
+            self.assertEqual(canonical.read_text(encoding="utf-8"), "# Memory\n\nkeep forever\n")
+
+            installer.enable_native(root)
+            payload = json.loads(registry.read_text(encoding="utf-8"))
+            self.assertTrue(payload["extensions"]["ai-verse-memory"]["enabled"])
+
+            installer.detach_native(root)
+            payload = json.loads(registry.read_text(encoding="utf-8"))
+            self.assertNotIn("ai-verse-memory", payload["extensions"])
+            self.assertIn("ai-verse-data", payload["extensions"])
+            self.assertEqual(canonical.read_text(encoding="utf-8"), "# Memory\n\nkeep forever\n")
+
     def test_invalid_local_registry_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
