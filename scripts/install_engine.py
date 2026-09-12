@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -20,6 +21,8 @@ BASE_URL = "https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory
 MARKER_START = "<!-- AI-VERSE-MEMORY:START -->"
 MARKER_END = "<!-- AI-VERSE-MEMORY:END -->"
 LOCAL_REGISTRY = Path(".aiverse/extensions/registry.json")
+LOCAL_REGISTRY_LOCK = Path(".aiverse/extensions/registry.json.lock")
+MAX_REGISTRY_BYTES = 1024 * 1024
 
 NATIVE_BLOCK = """<!-- AI-VERSE-MEMORY:START -->
 ## Persistent memory engine
@@ -91,16 +94,88 @@ def ensure_gitignore(target: Path, entry: str, comment: str) -> None:
     path.write_text(text.rstrip() + addition, encoding="utf-8")
 
 
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+def _ensure_extension_dir(target: Path) -> Path:
+    base = target.resolve()
+    meta = base / ".aiverse"
+    extensions = meta / "extensions"
+    for path in (meta, extensions):
+        if path.exists() and path.is_symlink():
+            raise RuntimeError(f"Unsafe symlink in extension registry path: {path}")
+        if path.exists() and not path.is_dir():
+            raise RuntimeError(f"Extension registry path is not a directory: {path}")
+        if not path.exists():
+            path.mkdir(mode=0o700)
+    return extensions
+
+
+@contextmanager
+def _registry_lock(target: Path):
+    extensions = _ensure_extension_dir(target)
+    lock = extensions / "registry.json.lock"
     try:
+        fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeError(f"Local extension registry is busy: {lock}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Could not acquire local extension registry lock: {exc}") from exc
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"extension_id": "ai-verse-memory"}, handle)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        yield
+    finally:
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _read_local_registry(target: Path) -> tuple[dict, Optional[str]]:
+    registry = target / LOCAL_REGISTRY
+    if not registry.exists():
+        return {"schema_version": "1.0", "extensions": {}}, None
+    if registry.is_symlink() or not registry.is_file():
+        raise RuntimeError(f"Local extension registry must be a regular non-symlink file: {registry}")
+    if registry.stat().st_size > MAX_REGISTRY_BYTES:
+        raise RuntimeError("Local extension registry is too large; left unchanged")
+    try:
+        raw = registry.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Local extension registry is unreadable; left unchanged: {registry}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Local extension registry must contain a JSON object: {registry}")
+    if str(payload.get("schema_version", "")) != "1.0":
+        raise RuntimeError(
+            f"Unsupported local extension registry schema {payload.get('schema_version')!r}; left unchanged"
+        )
+    if not isinstance(payload.get("extensions"), dict):
+        raise RuntimeError("Local extension registry 'extensions' must be a JSON object; left unchanged")
+    return payload, raw
+
+
+def _write_registry_atomic(target: Path, payload: dict, expected_raw: Optional[str]) -> None:
+    extensions = _ensure_extension_dir(target)
+    registry = extensions / "registry.json"
+    current_raw = registry.read_text(encoding="utf-8") if registry.exists() else None
+    if current_raw != expected_raw:
+        raise RuntimeError("Local extension registry changed during Memory lifecycle operation")
+    fd, temp_name = tempfile.mkstemp(prefix=".registry.", suffix=".tmp", dir=str(extensions))
+    try:
+        try:
+            os.chmod(temp_name, 0o600)
+        except OSError:
+            pass
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_name, path)
+        if registry.exists() and (registry.is_symlink() or not registry.is_file()):
+            raise RuntimeError("Local extension registry became unsafe before replacement")
+        os.replace(temp_name, registry)
     finally:
         try:
             Path(temp_name).unlink()
@@ -109,51 +184,62 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
 
 
 def register_local_extension(target: Path) -> str:
-    registry = target / LOCAL_REGISTRY
-    if registry.exists():
-        try:
-            payload = json.loads(registry.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"Local extension registry is unreadable; left unchanged: {registry}") from exc
-        if not isinstance(payload, dict):
-            raise RuntimeError(f"Local extension registry must contain a JSON object: {registry}")
-        if str(payload.get("schema_version", "")) != "1.0":
-            raise RuntimeError(
-                f"Unsupported local extension registry schema {payload.get('schema_version')!r}; left unchanged"
-            )
-        extensions = payload.get("extensions")
-        if not isinstance(extensions, dict):
-            raise RuntimeError("Local extension registry 'extensions' must be a JSON object; left unchanged")
-    else:
-        payload = {"schema_version": "1.0", "extensions": {}}
+    with _registry_lock(target):
+        payload, raw = _read_local_registry(target)
         extensions = payload["extensions"]
+        existing = extensions.get("ai-verse-memory", {})
+        if existing is None:
+            existing = {}
+        if not isinstance(existing, dict):
+            raise RuntimeError("Existing ai-verse-memory registration is not an object; left unchanged")
+        enabled = existing.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise RuntimeError("Existing ai-verse-memory enabled field must be boolean; left unchanged")
+        entry = dict(existing)
+        entry.update(
+            {
+                "id": "ai-verse-memory",
+                "supported": True,
+                "installed": True,
+                "enabled": enabled,
+                "version": VERSION,
+                "source": "AI-Verse-Memory",
+                "instructions": "scripts/ai-verse-memory/MEMORY-PROTOCOL.md",
+                "engine": "scripts/ai-verse-memory/memory.py",
+                "adapters": [
+                    ".claude/skills/ai-verse-memory/SKILL.md",
+                    ".agents/skills/ai-verse-memory/SKILL.md",
+                ],
+            }
+        )
+        extensions["ai-verse-memory"] = entry
+        _write_registry_atomic(target, payload, raw)
+        return "updated" if existing else "registered"
 
-    existing = extensions.get("ai-verse-memory", {})
-    if existing is None:
-        existing = {}
-    if not isinstance(existing, dict):
-        raise RuntimeError("Existing ai-verse-memory registration is not an object; left unchanged")
 
-    entry = dict(existing)
-    entry.update(
-        {
-            "id": "ai-verse-memory",
-            "supported": True,
-            "installed": True,
-            "enabled": bool(existing.get("enabled", True)),
-            "version": VERSION,
-            "source": "AI-Verse-Memory",
-            "instructions": "scripts/ai-verse-memory/MEMORY-PROTOCOL.md",
-            "engine": "scripts/ai-verse-memory/memory.py",
-            "adapters": [
-                ".claude/skills/ai-verse-memory/SKILL.md",
-                ".agents/skills/ai-verse-memory/SKILL.md",
-            ],
-        }
-    )
-    extensions["ai-verse-memory"] = entry
-    _write_json_atomic(registry, payload)
-    return "updated" if existing else "registered"
+def set_local_extension_enabled(target: Path, enabled: bool) -> dict:
+    with _registry_lock(target):
+        payload, raw = _read_local_registry(target)
+        extensions = payload["extensions"]
+        existing = extensions.get("ai-verse-memory")
+        if not isinstance(existing, dict):
+            raise RuntimeError("AI-Verse Memory is not registered in this OS")
+        entry = dict(existing)
+        entry["enabled"] = bool(enabled)
+        extensions["ai-verse-memory"] = entry
+        _write_registry_atomic(target, payload, raw)
+        return entry
+
+
+def unregister_local_extension(target: Path) -> bool:
+    with _registry_lock(target):
+        payload, raw = _read_local_registry(target)
+        extensions = payload["extensions"]
+        if "ai-verse-memory" not in extensions:
+            return False
+        del extensions["ai-verse-memory"]
+        _write_registry_atomic(target, payload, raw)
+        return True
 
 
 def _migrate_exact_legacy_marker(path: Path, label: str) -> str:
