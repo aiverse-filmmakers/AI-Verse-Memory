@@ -1481,13 +1481,36 @@ def integration_checks(root: Path, mode: str) -> List[Tuple[str, bool, str, bool
         same = claude_skill.read_bytes() == codex_skill.read_bytes()
         checks.append(("Runtime skill parity", same, "Claude and Codex SKILL.md match", False))
 
-    registry = root / "skills" / "registry.yaml"
-    registered = registry.exists() and "id: ai-verse-memory" in registry.read_text(encoding="utf-8", errors="replace")
-    checks.append(("Capability registry", registered, "skills/registry.yaml", False))
+    local_registry = root / ".aiverse" / "extensions" / "registry.json"
+    attached = False
+    attachment_detail = ".aiverse/extensions/registry.json"
+    if local_registry.is_file() and not local_registry.is_symlink():
+        try:
+            registry_data = json.loads(local_registry.read_text(encoding="utf-8"))
+            memory_entry = (registry_data.get("extensions") or {}).get("ai-verse-memory")
+            attached = bool(
+                registry_data.get("schema_version") == "1.0"
+                and isinstance(memory_entry, dict)
+                and memory_entry.get("supported") is True
+                and memory_entry.get("installed") is True
+                and memory_entry.get("enabled") is True
+            )
+            if isinstance(memory_entry, dict) and memory_entry.get("enabled") is False:
+                attachment_detail = "Memory is attached but disabled"
+        except Exception as exc:  # noqa: BLE001
+            attachment_detail = f"invalid local extension registry: {exc}"
+    checks.append(("Local extension attachment", attached, attachment_detail, False))
+
+    legacy_registry = root / "skills" / "registry.yaml"
+    legacy_registered = (
+        legacy_registry.exists()
+        and "id: ai-verse-memory" in legacy_registry.read_text(encoding="utf-8", errors="replace")
+    )
+    checks.append(("Legacy capability registration absent", not legacy_registered, "No ai-verse-memory stanza in skills/registry.yaml", False))
 
     agents = root / "AGENTS.md"
     agents_has = agents.exists() and "AI-VERSE-MEMORY:START" in agents.read_text(encoding="utf-8", errors="replace")
-    checks.append(("Canonical runtime instruction", agents_has, "AGENTS.md", False))
+    checks.append(("Tracked AGENTS integration clean", not agents_has, "No Memory-owned standing block in AGENTS.md", False))
 
     claude = root / "CLAUDE.md"
     claude_has = claude.exists() and "AI-VERSE-MEMORY:START" in claude.read_text(encoding="utf-8", errors="replace")
