@@ -15,7 +15,7 @@ When installed into AI-Verse OS v2, the operating system remains the source of t
 - Current profile, context, decisions, and workspace manifests are indexed in place rather than copied.
 - Workspace recall is isolated by default.
 - SQLite lives under `runtime/` as derived state.
-- The installer registers Memory as an OS capability and updates the canonical `AGENTS.md` runtime contract without duplicating standing instructions into `CLAUDE.md`.
+- The installer attaches Memory through the local `.aiverse/extensions/registry.json` contract without modifying tracked OS runtime files.
 
 If no compatible AI-Verse OS v2 is detected, the original `.ai-verse-memory/` standalone model remains available.
 
@@ -142,14 +142,29 @@ The installer is idempotent and automatically selects native AI-Verse OS v2 or s
 
 ## What native installation does
 
-1. installs the neutral memory engine under `scripts/ai-verse-memory/`;
+1. installs the neutral Memory engine under `scripts/ai-verse-memory/`;
 2. installs matching Claude and Codex skill adapters;
-3. registers `ai-verse-memory` in `skills/registry.yaml` when the expected registry is present;
-4. adds one bounded integration block to canonical `AGENTS.md`;
-5. removes any old AI-Verse Memory standing block from `CLAUDE.md`, because AI-Verse OS v2 treats it as an adapter rather than a second runtime contract;
-6. initializes the derived SQLite index;
-7. runs `doctor`;
-8. leaves any old `.ai-verse-memory/` store untouched and offers a deliberate migration path.
+3. attaches `ai-verse-memory` in `.aiverse/extensions/registry.json` using the shared lock/atomic-replace contract;
+4. migrates only exact legacy Memory-owned blocks/stanzas out of tracked `AGENTS.md`, `CLAUDE.md`, or `skills/registry.yaml`; ambiguous user-modified legacy content is left untouched;
+5. initializes the derived SQLite index;
+6. runs `doctor`;
+7. leaves canonical operator/workspace Memory and any old standalone `.ai-verse-memory/` store untouched unless the user deliberately migrates it.
+
+Normal native install/update does **not** add a Memory block to `AGENTS.md`, `CLAUDE.md`, `AI-VERSE.yaml`, or `skills/registry.yaml`.
+
+# Attachment lifecycle
+
+Native attachment can be changed without deleting canonical Memory:
+
+```bash
+python scripts/install.py --target /path/to/AI-Verse-OS --action disable
+python scripts/install.py --target /path/to/AI-Verse-OS --action enable
+python scripts/install.py --target /path/to/AI-Verse-OS --action detach
+```
+
+`disable` keeps the registration but marks it unavailable. `detach` removes only Memory's local registry entry. Both preserve operator/workspace atomic Memory and the installed engine/adapters; re-running the normal installer can attach/repair it again.
+
+Standalone state is never automatically detached, deleted, or converted into native state. Migration remains explicit.
 
 # Core commands
 
@@ -246,7 +261,7 @@ python scripts/ai-verse-memory/memory.py migrate-legacy --apply
 python scripts/ai-verse-memory/memory.py doctor
 ```
 
-Native `doctor` checks storage, SQLite, FTS fallback, rebuildability, workspace isolation, Claude/Codex skill parity, capability registration, canonical AGENTS integration, and a clean Claude adapter.
+Native `doctor` checks storage, SQLite, FTS fallback, rebuildability, workspace isolation, Claude/Codex skill parity, the local extension attachment, absence of obsolete tracked Memory registrations, and a clean Claude adapter.
 
 The repository CI tests Python 3.9 and 3.12 on Linux, macOS, and Windows, plus standalone and AI-Verse OS v2 installer smoke tests.
 
