@@ -354,6 +354,25 @@ def install_native(target: Path, source_dir: Optional[Path]) -> None:
     print("Registration: .aiverse/extensions/registry.json")
 
 
+
+def disable_native(target: Path) -> None:
+    entry = set_local_extension_enabled(target, False)
+    print(f"AI-Verse Memory disabled: enabled={entry['enabled']}")
+    print("Canonical operator/workspace Memory and installed engine files were preserved.")
+
+
+def enable_native(target: Path) -> None:
+    entry = set_local_extension_enabled(target, True)
+    print(f"AI-Verse Memory enabled: enabled={entry['enabled']}")
+
+
+def detach_native(target: Path) -> None:
+    removed = unregister_local_extension(target)
+    print(f"AI-Verse Memory local attachment removed: {removed}")
+    print("Canonical operator/workspace Memory was preserved.")
+    print("Installed engine/adapters were preserved for explicit re-attachment or repair.")
+
+
 def install_standalone(target: Path, source_dir: Optional[Path]) -> None:
     runtime = target / ".ai-verse-memory"
     source_copy("scripts/memory.py", runtime / "memory.py", source_dir)
@@ -374,19 +393,43 @@ def install_standalone(target: Path, source_dir: Optional[Path]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Install AI-Verse Memory")
+    parser = argparse.ArgumentParser(description="Install or manage AI-Verse Memory")
     parser.add_argument("--target", default=os.getenv("AI_VERSE_MEMORY_TARGET", "."))
     parser.add_argument("--source-dir", default=os.getenv("AI_VERSE_MEMORY_SOURCE_DIR"))
+    parser.add_argument(
+        "--action",
+        choices=("install", "enable", "disable", "detach"),
+        default="install",
+        help="native attachment lifecycle action; install remains the bootstrap default",
+    )
     args = parser.parse_args()
 
     target = Path(args.target).expanduser().resolve()
     source_dir = Path(args.source_dir).expanduser().resolve() if args.source_dir else None
-    target.mkdir(parents=True, exist_ok=True)
+    if args.action == "install":
+        target.mkdir(parents=True, exist_ok=True)
+    elif not target.is_dir():
+        raise RuntimeError(f"Memory lifecycle target does not exist: {target}")
 
     native = detect_native(target)
     print(f"AI-Verse Memory {VERSION}")
     print(f"Target: {target}")
     print(f"Mode: {'ai-verse-os-v2' if native else 'standalone'}")
+    print(f"Action: {args.action}")
+
+    if args.action != "install":
+        if not native:
+            raise RuntimeError(
+                "enable/disable/detach are native AI-Verse OS attachment actions; "
+                "standalone Memory state is preserved and never guessed or deleted"
+            )
+        if args.action == "enable":
+            enable_native(target)
+        elif args.action == "disable":
+            disable_native(target)
+        else:
+            detach_native(target)
+        return 0
 
     if native:
         install_native(target, source_dir)
