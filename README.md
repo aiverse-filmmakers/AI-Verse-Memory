@@ -166,6 +166,8 @@ python scripts/install.py --target /path/to/AI-Verse-OS --action detach
 
 Standalone state is never automatically detached, deleted, or converted into native state. Migration remains explicit.
 
+If Memory existed before AI-Verse OS, install OS into a clean root and use `migrate-legacy --source-root <old-project>` from the newly attached native Memory engine. The old standalone store remains untouched. See [migration/MIGRATION.md](migration/MIGRATION.md).
+
 # Core commands
 
 Native examples:
