@@ -1,6 +1,6 @@
 # Historical Memory Migration
 
-AI-Verse Memory v0.2 supports two migration paths.
+AI-Verse Memory v0.2 supports three migration situations through two deliberate workflows.
 
 ## A. Existing Agent-OS context into memory
 
@@ -69,6 +69,33 @@ The migration:
 The migration deliberately does not auto-promote `.ai-verse-memory/profile.md` or scenario summaries into AI-Verse OS profile/context. Those are summaries from the old architecture and may be stale or overlap newer canonical sources.
 
 If still useful, distill them manually into the correct operator/workspace source with provenance.
+
+## C. Memory existed before AI-Verse OS
+
+Do **not** install AI-Verse OS over an arbitrary non-empty standalone project merely to preserve install order.
+
+Install AI-Verse OS into a clean root, install/attach Memory there, then point the native Memory engine at the old standalone project:
+
+```bash
+python <new-ai-verse-os>/scripts/ai-verse-memory/memory.py \
+  --root <new-ai-verse-os> \
+  migrate-legacy \
+  --source-root <old-standalone-project>
+```
+
+Review the generated migration report first. Apply only after review:
+
+```bash
+python <new-ai-verse-os>/scripts/ai-verse-memory/memory.py \
+  --root <new-ai-verse-os> \
+  migrate-legacy \
+  --source-root <old-standalone-project> \
+  --apply
+```
+
+`--source-root` may point either to the old project root or directly to its `.ai-verse-memory/` directory.
+
+The external source store remains byte-for-byte untouched by migration. Symlinked/escaping legacy memory files are rejected rather than followed. This is the supported order-independent path for "Memory first, OS later": package/state can predate OS, but adoption into a native OS is explicit rather than an unsafe in-place OS overwrite.
 
 ## Validation
 
