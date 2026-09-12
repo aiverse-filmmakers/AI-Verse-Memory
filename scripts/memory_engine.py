@@ -1393,33 +1393,69 @@ def map_legacy_scope(raw_scope: str, root: Path) -> Optional[str]:
     return None
 
 
-def migrate_legacy(root: Path, apply: bool = False) -> Dict[str, int]:
+def _legacy_source(root: Path, source_root: Optional[Path]) -> Tuple[Path, Path]:
+    """Return (display/source root, legacy .ai-verse-memory root) without following symlinked stores."""
+    if source_root is None:
+        source_base = root
+        legacy = root / ".ai-verse-memory"
+    else:
+        source_base = Path(source_root).expanduser().resolve(strict=True)
+        if not source_base.is_dir() or source_base.is_symlink():
+            raise ValueError("Legacy Memory --source-root must be a real directory")
+        legacy = source_base if source_base.name == ".ai-verse-memory" else source_base / ".ai-verse-memory"
+
+    if not legacy.exists():
+        raise ValueError(f"No legacy .ai-verse-memory store found at {legacy}")
+    if legacy.is_symlink() or not legacy.is_dir():
+        raise ValueError("Legacy .ai-verse-memory store must be a real non-symlink directory")
+    old_memories = legacy / "memories"
+    if not old_memories.exists():
+        raise ValueError(f"No legacy .ai-verse-memory/memories store found at {old_memories}")
+    if old_memories.is_symlink() or not old_memories.is_dir():
+        raise ValueError("Legacy memories path must be a real non-symlink directory")
+    return source_base, legacy
+
+
+def migrate_legacy(root: Path, apply: bool = False, source_root: Optional[Path] = None) -> Dict[str, int]:
     mode = detect_mode(root)
     if mode != MODE_NATIVE:
         raise ValueError("migrate-legacy is only for AI-Verse OS v2 native mode")
-    legacy = root / ".ai-verse-memory"
+    source_base, legacy = _legacy_source(root, source_root)
     old_memories = legacy / "memories"
-    if not old_memories.exists():
-        raise ValueError("No legacy .ai-verse-memory/memories store found")
+    memories_real = old_memories.resolve(strict=True)
 
     counts = {"migratable": 0, "copied": 0, "duplicate": 0, "unresolved": 0, "invalid": 0}
     report_rows = []
     for old_path in sorted(old_memories.rglob("*.md")):
+        try:
+            if old_path.is_symlink() or not old_path.is_file():
+                raise ValueError("not a regular file")
+            resolved_old = old_path.resolve(strict=True)
+            resolved_old.relative_to(memories_real)
+        except (OSError, ValueError):
+            counts["invalid"] += 1
+            report_rows.append((str(old_path), "invalid", "unsafe or escaping legacy memory path"))
+            continue
+
         meta, body = parse_markdown(old_path)
         mem_id = meta.get("id")
+        try:
+            display_source = str(old_path.relative_to(source_base))
+        except ValueError:
+            display_source = str(old_path)
         if not mem_id:
             counts["invalid"] += 1
-            report_rows.append((str(old_path.relative_to(root)), "invalid", "missing id"))
+            report_rows.append((display_source, "invalid", "missing id"))
             continue
         mapped = map_legacy_scope(meta.get("scope", "global"), root)
         if not mapped:
             counts["unresolved"] += 1
-            report_rows.append((str(old_path.relative_to(root)), "unresolved", meta.get("scope", "")))
+            report_rows.append((display_source, "unresolved", meta.get("scope", "")))
             continue
         counts["migratable"] += 1
         if locate_memory(mem_id, root, mode):
             counts["duplicate"] += 1
-            report_rows.append((str(old_path.relative_to(root)), "duplicate", mapped))
+            report_rows.append((display_source, "duplicate", mapped))
             continue
         if apply:
             new_meta = dict(meta)
@@ -1433,9 +1469,9 @@ def migrate_legacy(root: Path, apply: bool = False) -> Dict[str, int]:
             target = atomic_path(mem_id, created, mapped, root, mode)
             target.write_text(render_frontmatter(new_meta) + "\n\n" + body.strip() + "\n", encoding="utf-8")
             counts["copied"] += 1
-            report_rows.append((str(old_path.relative_to(root)), "copied", relpath(target, root)))
+            report_rows.append((display_source, "copied", relpath(target, root)))
         else:
-            report_rows.append((str(old_path.relative_to(root)), "planned", mapped))
+            report_rows.append((display_source, "planned", mapped))
 
     if apply:
         rebuild(silent=True, root=root, mode=mode)
@@ -1448,6 +1484,7 @@ def migrate_legacy(root: Path, apply: bool = False) -> Dict[str, int]:
         "",
         f"Generated: {now_iso()}",
         f"Applied: {'yes' if apply else 'no'}",
+        f"Source: `{legacy}`",
         "",
         "The legacy `.ai-verse-memory/` store is never deleted by this migration.",
         "Profiles and scenario summaries are not blindly promoted into AI-Verse OS canonical profile/context. Review and distill them separately if still useful.",
@@ -1734,8 +1771,13 @@ def build_parser() -> argparse.ArgumentParser:
     discover_p.add_argument("--output", default=None)
     discover_p.add_argument("--max-files", type=int, default=250)
 
-    legacy_p = sub.add_parser("migrate-legacy", help="Plan or apply migration from a v0.1 .ai-verse-memory store into AI-Verse OS v2")
+    legacy_p = sub.add_parser("migrate-legacy", help="Plan or apply migration from a standalone/legacy .ai-verse-memory store into AI-Verse OS v2")
     legacy_p.add_argument("--apply", action="store_true", help="Copy migratable atomic memories; old store remains untouched")
+    legacy_p.add_argument(
+        "--source-root",
+        default=None,
+        help="Optional standalone project root (or its .ai-verse-memory directory) when the legacy store lives outside this OS root",
+    )
 
     migrate_p = sub.add_parser("migration-complete", help="Mark the initial migration pass complete")
     migrate_p.add_argument("--summary", default="")
@@ -1806,7 +1848,8 @@ def main() -> int:
             output = Path(args.output).resolve() if args.output else None
             discover(Path(args.source_root), output, max(1, min(5000, args.max_files)))
         elif args.command == "migrate-legacy":
-            migrate_legacy(root, apply=args.apply)
+            source_root = Path(args.source_root).expanduser() if args.source_root else None
+            migrate_legacy(root, apply=args.apply, source_root=source_root)
         elif args.command == "migration-complete":
             migration_complete(args.summary, root, mode)
         return 0
