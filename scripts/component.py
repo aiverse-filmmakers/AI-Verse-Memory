@@ -320,6 +320,7 @@ def _copy_runtime(target: Path, mode: str, source_dir: Optional[Path]) -> None:
     else:
         runtime = target / ".ai-verse-memory"
     installer.source_copy("scripts/memory.py", runtime / "memory.py", source_dir)
+    installer.source_copy("scripts/component.py", runtime / "component.py", source_dir)
     installer.source_copy("protocol/MEMORY-PROTOCOL.md", runtime / "MEMORY-PROTOCOL.md", source_dir)
     installer.source_copy("migration/MIGRATION.md", runtime / "MIGRATION.md", source_dir)
     if mode == memory.MODE_STANDALONE:
@@ -683,7 +684,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     target = Path(args.target).expanduser().resolve()
-    source_dir = Path(args.source_dir).expanduser().resolve() if args.source_dir else HERE.parent
+    if args.source_dir:
+        source_dir = Path(args.source_dir).expanduser().resolve()
+    elif (HERE.parent / "manifest.json").exists():
+        source_dir = HERE.parent
+    else:
+        source_dir = None
     try:
         if args.command == "install":
             payload = _install_package(target, source_dir)
