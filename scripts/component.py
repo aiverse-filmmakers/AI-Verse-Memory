@@ -474,8 +474,9 @@ def _uninstall(target: Path) -> dict:
         )
     else:
         _remove_adapter_dirs(target)
-        installer.replace_marker_block(target / "AGENTS.md", None)
-        installer.replace_marker_block(target / "CLAUDE.md", None)
+        for contract in (target / "AGENTS.md", target / "CLAUDE.md"):
+            if contract.exists():
+                installer.replace_marker_block(contract, None)
         runtime = _runtime_dir(target, mode)
         for name in (
             "memory.py",
