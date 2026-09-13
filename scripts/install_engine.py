@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Optional
 
 VERSION = "0.3.0-beta.1"
-BASE_URL = "https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main"
+DEFAULT_SOURCE_REF = os.getenv("AI_VERSE_MEMORY_RELEASE_REF", "main").strip() or "main"
+BASE_URL = os.getenv(
+    "AI_VERSE_MEMORY_BASE_URL",
+    f"https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/{DEFAULT_SOURCE_REF}",
+).rstrip("/")
 MARKER_START = "<!-- AI-VERSE-MEMORY:START -->"
 MARKER_END = "<!-- AI-VERSE-MEMORY:END -->"
 LOCAL_REGISTRY = Path(".aiverse/extensions/registry.json")
