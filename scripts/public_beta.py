@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 PUBLIC_BETA_SCHEMA = 1
-LOCK_STALE_SECONDS = 600
+LOCK_STALE_SECONDS = 600\nLOCK_WAIT_SECONDS = 10
 _LOCK_LOCAL = threading.local()
 
 
@@ -249,20 +249,23 @@ def _mutation_lock(engine, root: Path, mode: str):
             counts[key] -= 1
         return
 
-    for attempt in range(2):
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
         try:
             fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             break
         except FileExistsError as exc:
-            if attempt == 0 and _lock_is_stale(lock):
+            if _lock_is_stale(lock):
                 try:
                     lock.unlink()
                 except FileNotFoundError:
                     pass
                 continue
-            raise RuntimeError(f"AI-Verse Memory canonical mutation is busy: {lock}") from exc
-    else:
-        raise RuntimeError(f"Could not acquire Memory mutation lock: {lock}")
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"Timed out waiting for AI-Verse Memory canonical mutation lock: {lock}") from exc
+            time.sleep(0.05)
+        except OSError as exc:
+            raise RuntimeError(f"Could not acquire Memory mutation lock: {exc}") from exc
 
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
