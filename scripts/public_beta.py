@@ -488,11 +488,22 @@ def _patched_write_atomic(engine, original_rebuild):
     return write_atomic
 
 
+def _root_and_mode_for_memory_path(engine, path: Path) -> Tuple[Path, str]:
+    path = Path(path).absolute()
+    for parent in [path.parent, *path.parents]:
+        manifest = parent / "AI-VERSE.yaml"
+        if manifest.exists():
+            return parent.resolve(), engine.detect_mode(parent)
+        if parent.name == ".ai-verse-memory":
+            return parent.parent.resolve(), engine.MODE_STANDALONE
+    root = engine.repository_root()
+    return root, engine.detect_mode(root)
+
+
 def _patched_update_meta(engine):
     def update_meta(path: Path, changes: Dict[str, str]) -> None:
         path = Path(path)
-        root = engine.repository_root()
-        mode = engine.detect_mode(root)
+        root, mode = _root_and_mode_for_memory_path(engine, path)
         with _mutation_lock(engine, root, mode):
             _assert_writable_authority(engine, root, mode)
             if mode == engine.MODE_NATIVE:
@@ -655,8 +666,6 @@ def _legacy_snapshot(engine, root: Path, source_root: Optional[Path]) -> dict:
             {
                 "path": record.get("path"),
                 "sha256": record.get("file_sha256"),
-                "result": record.get("result"),
-                "mapped_scope": record.get("mapped_scope"),
             }
         )
     source_fingerprint = _payload_digest(digest_rows)
@@ -672,9 +681,11 @@ def _legacy_snapshot(engine, root: Path, source_root: Optional[Path]) -> dict:
     }
 
 
-def _migration_paths(root: Path) -> Tuple[Path, Path]:
-    report_dir = root / "operator" / "memory" / "migrations"
-    report_dir.mkdir(parents=True, exist_ok=True)
+def _migration_paths(engine, root: Path) -> Tuple[Path, Path]:
+    operator = Path(root).resolve(strict=True) / "operator"
+    _safe_existing_dir(operator, "operator root")
+    memory = _safe_child_dir(operator, "memory")
+    report_dir = _safe_child_dir(memory, "migrations")
     return (
         report_dir / "legacy-ai-verse-memory-plan.json",
         report_dir / "legacy-ai-verse-memory-migration.md",
@@ -770,7 +781,7 @@ def _patched_migrate_legacy(engine, original_rebuild):
         if engine.detect_mode(root) != engine.MODE_NATIVE:
             raise ValueError("migrate-legacy is only for AI-Verse OS v2 native mode")
         with _mutation_lock(engine, root, engine.MODE_NATIVE):
-            plan_path, report_path = _migration_paths(root)
+            plan_path, report_path = _migration_paths(engine, root)
             snapshot = _legacy_snapshot(engine, root, source_root)
             base_counts = dict(snapshot["counts"])
             result_counts = {
@@ -879,7 +890,7 @@ def _patched_migration_complete(engine):
         with _mutation_lock(engine, root, mode):
             p = engine.paths(root, mode)
             if mode == engine.MODE_NATIVE:
-                plan_path, _ = _migration_paths(root)
+                plan_path, _ = _migration_paths(engine, root)
                 legacy = root / ".ai-verse-memory"
                 if plan_path.exists():
                     plan = json.loads(plan_path.read_text(encoding="utf-8"))
