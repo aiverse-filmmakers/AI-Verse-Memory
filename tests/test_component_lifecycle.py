@@ -36,8 +36,7 @@ class ComponentLifecycleAcceptanceTests(unittest.TestCase):
             self.assertEqual(installed["state"], "setup-required")
             self.assertTrue(installed["installed"])
             self.assertFalse(installed["attached"])
-            registry = json.loads((target / ".aiverse/extensions/registry.json").read_text(encoding="utf-8"))
-            self.assertNotIn("ai-verse-memory", registry["extensions"])
+            self.assertFalse((target / ".aiverse/extensions/registry.json").exists())
 
             setup = component._setup(target, ROOT)
             self.assertEqual(setup["state"], "ready")
@@ -84,7 +83,8 @@ class ComponentLifecycleAcceptanceTests(unittest.TestCase):
             self.assertTrue(uninstalled["preserved_state"])
             self.assertTrue(mem_path.exists())
             self.assertIsNotNone(component.memory.locate_memory(mem_id, target, component.memory.MODE_NATIVE))
-            self.assertFalse((target / ".aiverse/extensions/registry.json").exists())
+            registry = json.loads((target / ".aiverse/extensions/registry.json").read_text(encoding="utf-8"))
+            self.assertNotIn("ai-verse-memory", registry["extensions"])
 
             reinstalled = component._install_package(target, ROOT)
             self.assertEqual(reinstalled["state"], "setup-required")
