@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "component": "ai-verse-memory",
+  "version": "0.3.0-beta.1",
+  "channel": "public-beta",
+  "artifact": {
+    "commit": "031e1e77c97ed3c9012235c7ffe0a4ece05e3695",
+    "tree": "b72e2a0a6b1e8ddc9e255deb36c22381f83f4366",
+    "immutable_identifier": "git-commit-sha"
+  },
+  "acceptance": {
+    "pull_request": 9,
+    "pull_request_head": "23768ce6e993e7d05f84689d0edea884b90f8378",
+    "pull_request_run_id": 34769630300,
+    "merged_main_run_id": 34769753452,
+    "merged_main_run_number": 52,
+    "merged_main_conclusion": "success",
+    "completed_at": "2026-09-13T16:53:20Z",
+    "jobs_passed": 12,
+    "unit_matrix": {
+      "operating_systems": [
+        "ubuntu-latest",
+        "macos-latest",
+        "windows-latest"
+      ],
+      "python_versions": [
+        "3.9",
+        "3.12"
+      ]
+    },
+    "public_beta_acceptance_operating_systems": [
+      "ubuntu-latest",
+      "macos-latest",
+      "windows-latest"
+    ],
+    "installer_smoke_operating_systems": [
+      "ubuntu-latest",
+      "windows-latest"
+    ],
+    "os_update_integration": true
+  },
+  "bootstrap": {
+    "release_ref": "031e1e77c97ed3c9012235c7ffe0a4ece05e3695",
+    "remote_installers": [
+      "install.sh",
+      "install.ps1"
+    ],
+    "runtime_source_environment": [
+      "AI_VERSE_MEMORY_RELEASE_REF",
+      "AI_VERSE_MEMORY_BASE_URL"
+    ]
+  },
+  "ownership": {
+    "historical_evidence_and_lessons": "memory",
+    "skill_storage": false,
+    "brain_strategy": false
+  }
+}
