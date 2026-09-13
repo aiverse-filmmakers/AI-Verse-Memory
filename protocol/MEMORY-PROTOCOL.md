@@ -1,90 +1,134 @@
 # AI-Verse Memory Protocol
 
-AI-Verse Memory is a memory engine, not a competing source of truth.
+AI-Verse Memory is the canonical owner of historical memory, not a competing owner of current truth, Skills, or Brain strategy.
 
-## Operating principle
+## Operating law
 
-1. Identify the repository mode.
-2. Identify the active scope.
-3. Recall only the minimum relevant context.
-4. Treat current canonical OS context as newer authority than historical memory.
-5. Persist only durable history that has a clear future value.
-6. Keep the SQLite index disposable and rebuildable from Markdown.
+1. Detect repository mode and active scope.
+2. Recall the minimum relevant context.
+3. Treat current canonical owner state as newer authority than historical Memory.
+4. Persist only durable history with future value.
+5. Preserve provenance and chronology.
+6. Keep SQLite derived and rebuildable from canonical sources.
+7. Never create two writable canonical Memory routes during adoption.
 
-## AI-Verse OS v2 native mode
+## Native AI-Verse OS mode
 
-When `AI-VERSE.yaml` declares schema v2 and `architecture: unified-workspace`:
+When the host declares AI-Verse OS v2 unified-workspace architecture:
 
-- use `operator/` and `workspaces/` as the canonical storage architecture;
-- store atomic operator memories in `operator/memory/atomic/`;
-- store atomic workspace memories in `workspaces/<id>/memory/atomic/`;
-- keep the search database under `runtime/indexes/ai-verse-memory/`;
-- never create a second `.ai-verse-memory/profile.md` or scenario layer;
-- never treat memory as more authoritative than `CURRENT.md`, profile, decisions, or curated knowledge;
-- never silently search one workspace while working in another.
+- operator atomic history lives under `operator/memory/atomic/`;
+- workspace atomic history lives under `workspaces/<id>/memory/atomic/`;
+- derived recall state lives under `runtime/indexes/ai-verse-memory/`;
+- profile, current context, decisions, workspace topology, and knowledge keep their existing owners;
+- workspace recall never crosses into another workspace unless explicitly requested.
 
-The engine indexes selected canonical profile/context/decision files in place to improve recall without copying them into memory.
+Selected current canonical sources are indexed in place. They are not copied into a second Memory truth store.
+
+Native source and destination boundaries are checked both lexically and physically. Symlinked paths that escape the repository or cross ownership/scope are rejected.
 
 ## Standalone mode
 
-When no compatible AI-Verse OS v2 manifest exists, use `.ai-verse-memory/` as the portable canonical memory home and retain the profile/scenario model for backwards compatibility.
+When no compatible AI-Verse OS exists, `.ai-verse-memory/` is the portable canonical Memory home.
+
+A standalone store marked `AUTHORITY.json: status=retired` is historical evidence only. Supported canonical writes must refuse there after native authority handoff.
 
 ## Recall
 
-Native operator-only:
+Operator:
 
 ```bash
-python scripts/ai-verse-memory/memory.py recall "<query>" --scope operator
+python <memory-engine> recall "<query>" --scope operator
 ```
 
-Native workspace:
+Workspace:
 
 ```bash
-python scripts/ai-verse-memory/memory.py recall "<query>" --workspace <id>
+python <memory-engine> recall "<query>" --workspace <id>
 ```
 
-Standalone:
-
-```bash
-python .ai-verse-memory/memory.py recall "<query>" --scope <scope>
-```
-
-Cross-workspace recall requires `--all-workspaces` and should only be used when the task genuinely spans multiple workspaces.
+Cross-workspace recall requires explicit `--all-workspaces`.
 
 ## Capture
 
-Before saving atomic memory ask:
+Before saving historical Memory ask:
 
 - Will this matter later?
-- Is it history rather than current context?
-- Does a canonical profile/context/decision/knowledge file already own this truth?
+- Is it history rather than current state?
+- Does another canonical owner already own this current truth?
 - Is the scope correct?
-- Is it an update to an older atomic memory?
-- Is it safe to persist?
+- Is this a correction/supersession?
+- What provenance or evidence should remain attached?
 
-Good atomic types are `fact`, `preference`, `constraint`, `state`, `entity`, `event`, `experience`, and `workflow`. `decision` and the legacy `project_state` type remain supported for compatibility, but native AI-Verse OS should prefer its canonical decisions and use `state` for workspace history.
+Public-beta historical types include:
+
+- `fact`
+- `preference`
+- `constraint`
+- `state`
+- `entity`
+- `event`
+- `experience`
+- `workflow`
+- `lesson`
+- `correction`
+
+Legacy `decision` and `project_state` remain accepted for compatibility.
+
+Use `source` and repeatable `--evidence-ref` to retain historical provenance. Use `--effect-id` for retry-safe owner-routed capture when an effect may be replayed.
 
 ## Supersession
 
-Changed atomic memory should preserve chronology. Create the new memory and mark the prior one superseded. Normal recall excludes superseded entries unless history is explicitly requested.
+Changed historical Memory preserves chronology. The replacement points to the old memory, the old memory becomes superseded, and a recovery journal protects the multi-file effect from interruption.
 
-Do not use atomic supersession to rewrite current OS context.
+Normal recall excludes superseded history unless explicitly requested.
 
-## Progressive disclosure
+## Canonical mutation
 
-Native mode uses the OS itself as the disclosure hierarchy:
+Memory canonical mutation is component-owned and serialized.
 
-1. workspace manifest / operator profile for scope and identity;
-2. current context;
-3. relevant decisions and memory summaries;
-4. exact atomic memories only when needed.
+- canonical file writes use atomic replacement;
+- concurrent mutations wait on the Memory mutation lock;
+- stale abandoned locks can recover;
+- retryable remember effects may have durable idempotency receipts;
+- rebuild is coordinated with canonical mutation;
+- migration has its own reviewed snapshot and handoff receipt.
 
-Standalone mode retains profile -> scenario -> atomic memory.
+This mechanism is not a generic OS filesystem mutation service.
 
-## Skill promotion
+## Self-learning evidence boundary
 
-A repeatedly successful workflow memory with a clear trigger, inputs, steps, guardrails, outputs, and verification should be promoted into a real skill. Memory records history; skills define execution.
+Memory owns historical evidence for the canonical self-learning loop:
 
-## Privacy
+- experiences;
+- corrections;
+- lessons;
+- success/failure history;
+- provenance/evidence references;
+- recall of prior outcomes.
 
-Do not automatically persist secrets or highly sensitive data. Workspace privacy boundaries apply to memory recall as strictly as they apply to normal OS routing.
+Memory does **not** own:
+
+- executable Skill proposal packages;
+- candidate Skill source bytes;
+- Skill activation/version lifecycle;
+- strategic evaluation or promotion decisions.
+
+Skills owns Skill lifecycle. Brain owns strategic/evaluation policy. Memory only supplies historical evidence those owners may inspect.
+
+A repeated successful workflow may be evidence for Skill improvement, but Memory does not convert it into a Skill by itself.
+
+## Migration and authority
+
+Migration follows:
+
+```text
+discover -> dry-run snapshot -> review -> apply -> destination verify -> authority handoff -> retire old writer
+```
+
+If source bytes or target workspace topology drift after review, apply fails closed.
+
+If unresolved/invalid records remain, authority handoff does not occur.
+
+## Privacy and scope
+
+Persist only information appropriate for durable local history. Workspace boundaries apply to Memory recall and write placement exactly as they apply to the host routing model.
