@@ -63,7 +63,7 @@ class ExternalLegacyMigrationTests(unittest.TestCase):
 
             source_before = {
                 path.relative_to(source).as_posix(): path.read_bytes()
-                for path in source.rglob("*")
+                for path in (source / ".ai-verse-memory" / "memories").rglob("*.md")
                 if path.is_file()
             }
 
@@ -84,10 +84,13 @@ class ExternalLegacyMigrationTests(unittest.TestCase):
 
             source_after = {
                 path.relative_to(source).as_posix(): path.read_bytes()
-                for path in source.rglob("*")
+                for path in (source / ".ai-verse-memory" / "memories").rglob("*.md")
                 if path.is_file()
             }
             self.assertEqual(source_after, source_before)
+            authority = source / ".ai-verse-memory" / "AUTHORITY.json"
+            self.assertTrue(authority.exists())
+            self.assertEqual(__import__("json").loads(authority.read_text(encoding="utf-8"))["status"], "retired")
             self.assertTrue(operator_path.exists())
             self.assertTrue(workspace_path.exists())
 
@@ -114,6 +117,8 @@ class ExternalLegacyMigrationTests(unittest.TestCase):
             except (OSError, NotImplementedError) as exc:
                 self.skipTest(f"symlinks unavailable: {exc}")
 
+            dry = mem.migrate_legacy(native, apply=False, source_root=source)
+            self.assertEqual(dry["invalid"], 1)
             result = mem.migrate_legacy(native, apply=True, source_root=source)
             self.assertEqual(result["invalid"], 1)
             self.assertEqual(result["copied"], 0)
