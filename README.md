@@ -1,287 +1,233 @@
 # AI-Verse Memory
 
-**A local-first persistent memory engine for AI agents and AI operating systems. Markdown stays canonical. SQLite is only a rebuildable index.**
+AI-Verse Memory is a local-first historical memory component for AI agents and AI operating systems. Canonical historical memory stays human-readable Markdown. SQLite is derived, disposable recall state.
 
-AI-Verse Memory v0.2 adds native support for the AI-Verse OS v2 Unified Workspace Architecture while preserving standalone compatibility for other Agent-OS repositories.
+Current public-beta version: **0.3.0-beta.1**.
 
-## What changed in v0.2
-
-The memory layer no longer assumes it should own the whole profile/project/context structure.
-
-When installed into AI-Verse OS v2, the operating system remains the source of truth and Memory acts as an engine:
-
-- AI-Verse OS defines where operator and workspace truth lives.
-- AI-Verse Memory stores only atomic historical memory in those canonical memory layers.
-- Current profile, context, decisions, and workspace manifests are indexed in place rather than copied.
-- Workspace recall is isolated by default.
-- SQLite lives under `runtime/` as derived state.
-- The installer attaches Memory through the local `.aiverse/extensions/registry.json` contract without modifying tracked OS runtime files.
-
-If no compatible AI-Verse OS v2 is detected, the original `.ai-verse-memory/` standalone model remains available.
-
-## Design principles
-
-- **One source of truth.** Memory never creates a second canonical profile/context system inside AI-Verse OS v2.
-- **Markdown is canonical.** Human-readable files remain the durable truth.
-- **SQLite is disposable.** Delete the index and rebuild it at any time.
-- **Scoped recall.** Operator and workspace memory stay isolated unless cross-workspace retrieval is explicitly requested.
-- **Current context beats history.** Historical memory cannot silently override current `CURRENT.md`, profile, or decisions.
-- **History stays history.** Changed atomic memories are superseded instead of rewritten.
-- **No extra AI infrastructure.** No vector database, embedding service, cloud memory API, Docker stack, or second LLM is required.
-- **Domain neutral.** Memory understands operator/workspace boundaries, not professions such as filmmaking, medicine, coding, or marketing.
-- **Private by default.** AI-Verse OS v2 already keeps user-owned state and runtime output local by default; standalone mode Git-ignores `.ai-verse-memory/`.
+In AI-Verse OS v2, current profile, context, decisions, workspace topology, and knowledge keep their existing owners. Memory owns historical atomic memory, provenance, corrections, experiences, and lessons. Memory does not own Skills or Brain strategy.
 
 ## Requirements
 
 - Python 3.9+
-- macOS, Linux, or Windows
-- AI-Verse OS v2 or another file-aware Agent-OS repository
+- Linux, macOS, or Windows
+- AI-Verse OS v2, or a standalone file-aware Agent-OS repository
 
-Normal memory use is offline after installation.
+## Install
 
-# Native AI-Verse OS v2 mode
+Use the public component lifecycle:
 
-The installer detects this contract:
-
-```yaml
-schema_version: "2.0"
-architecture: unified-workspace
+```bash
+python scripts/component.py --target /path/to/target install
 ```
 
-plus the `operator/` and `workspaces/` layers.
+Install makes the Memory package/runtime available. It does not attach Memory, initialize canonical state, transfer authority, approve scopes, or migrate old state.
 
-It then uses:
+Verify the expected post-install state:
+
+```bash
+python scripts/component.py --target /path/to/target --json status
+```
+
+Expected state: `setup-required`.
+
+The older `install.sh`, `install.ps1`, and `scripts/install.py` path remains for backward compatibility with the frozen beta and retains the historical combined install/setup behavior.
+
+## Setup
+
+```bash
+python scripts/component.py --target /path/to/target setup
+```
+
+Native setup:
+
+1. installs Memory runtime adapters;
+2. attaches through `.aiverse/extensions/registry.json`;
+3. initializes/rebuilds derived recall state;
+4. records Memory setup state;
+5. detects legacy Memory that still requires adoption.
+
+Setup never silently migrates old state or transfers canonical authority. If an active legacy store is detected, status becomes `migration-required`.
+
+Standalone setup initializes the portable `.ai-verse-memory/` layout and bounded agent integration.
+
+## Verify
+
+Fast, non-destructive status:
+
+```bash
+python scripts/component.py --target /path/to/target status
+python scripts/component.py --target /path/to/target --json status
+```
+
+Primary states:
+
+- `absent`
+- `setup-required`
+- `disabled`
+- `unhealthy`
+- `migration-required`
+- `ready`
+
+Deeper read-only doctor:
+
+```bash
+python scripts/component.py --target /path/to/target doctor
+python scripts/component.py --target /path/to/target --json doctor
+```
+
+Memory doctor reports structural, attachment, runtime, dependency, and operational depth separately. It does not claim whole-system readiness.
+
+## Use
+
+Native example:
+
+```bash
+python scripts/ai-verse-memory/memory.py --root /path/to/AI-Verse-OS remember \
+  --type experience \
+  --workspace example \
+  --text "The supervised test exposed a retry edge case."
+
+python scripts/ai-verse-memory/memory.py --root /path/to/AI-Verse-OS recall \
+  "retry edge case" \
+  --workspace example
+```
+
+Retry-safe historical evidence capture:
+
+```bash
+python scripts/ai-verse-memory/memory.py --root /path/to/AI-Verse-OS remember \
+  --type lesson \
+  --workspace example \
+  --text "Bounded retry recovered this provider failure." \
+  --source "run:render-42" \
+  --evidence-ref "receipt:42" \
+  --evidence-ref "artifact:render-42" \
+  --effect-id "learning-effect-42"
+```
+
+The same `--effect-id` with the same input returns the original effect. Reusing that ID for different input is rejected.
+
+Standalone uses the same engine commands through `.ai-verse-memory/memory.py`.
+
+## Update, disable, enable, uninstall
+
+Update without changing enablement or authority:
+
+```bash
+python scripts/component.py --target /path/to/target update
+```
+
+Native enablement:
+
+```bash
+python scripts/component.py --target /path/to/AI-Verse-OS disable
+python scripts/component.py --target /path/to/AI-Verse-OS enable
+```
+
+Uninstall integration/runtime while preserving canonical user state:
+
+```bash
+python scripts/component.py --target /path/to/target uninstall
+```
+
+Reinstall does not silently restore attachment:
+
+```bash
+python scripts/component.py --target /path/to/target install
+python scripts/component.py --target /path/to/target reconcile
+```
+
+`reconcile` rediscovers the preserved Memory setup receipt. It does not migrate legacy authority automatically.
+
+Expert registry-only detach:
+
+```bash
+python scripts/component.py --target /path/to/AI-Verse-OS detach
+```
+
+## What setup does not grant
+
+Setup does not grant new workspace permissions, external account access, Brain strategy ownership, Skill lifecycle ownership, automatic self-modification, or silent legacy authority transfer.
+
+Memory is an evidence/history owner, not a permission engine or strategy engine.
+
+## Native ownership
+
+When `AI-VERSE.yaml` declares schema v2 and `architecture: unified-workspace`, Memory owns historical atomic state under:
 
 ```text
-AI-Verse-OS/
-├── operator/
-│   ├── profile/                 # canonical profile, indexed in place
-│   ├── context/                 # canonical current context, indexed in place
-│   ├── decisions/               # canonical decisions, indexed in place
-│   └── memory/
-│       └── atomic/              # atomic operator memories
-│
-├── workspaces/
-│   └── <id>/
-│       ├── WORKSPACE.yaml       # indexed in place
-│       ├── context/             # indexed in place
-│       ├── decisions/           # indexed in place
-│       └── memory/
-│           └── atomic/          # atomic workspace memories
-│
-├── runtime/
-│   └── indexes/
-│       └── ai-verse-memory/
-│           └── memory.db        # derived, rebuildable
-│
-├── scripts/
-│   └── ai-verse-memory/
-│       ├── memory.py
-│       ├── MEMORY-PROTOCOL.md
-│       └── MIGRATION.md
-│
-├── .claude/skills/ai-verse-memory/SKILL.md
-└── .agents/skills/ai-verse-memory/SKILL.md
+operator/memory/atomic/
+workspaces/<id>/memory/atomic/
 ```
 
-It does **not** create `.ai-verse-memory/profile.md` or a second scenario/project hierarchy.
-
-## Native writeback model
-
-| Information | Canonical home |
-|---|---|
-| stable operator identity/preferences | `operator/profile/` |
-| current operator state | `operator/context/` |
-| historical operator memory | `operator/memory/` |
-| operator decisions | `operator/decisions/` |
-| current workspace state | `workspaces/<id>/context/` |
-| historical workspace memory | `workspaces/<id>/memory/` |
-| workspace decisions | `workspaces/<id>/decisions/` |
-| reusable knowledge | root/workspace `knowledge/` |
-| disposable search index | `runtime/indexes/ai-verse-memory/` |
-
-Memory should store what happened and may matter later. It should not duplicate what is already current canonical truth.
-
-# Standalone compatibility mode
-
-If AI-Verse OS v2 is not detected, installation preserves the original portable structure:
+Its derived index is:
 
 ```text
-.ai-verse-memory/
-├── memory.py
-├── MEMORY-PROTOCOL.md
-├── MIGRATION.md
-├── SCENARIO-TEMPLATE.md
-├── profile.md
-├── memories/
-├── scenarios/
-├── evidence/
-└── state/
-    └── memory.db
+runtime/indexes/ai-verse-memory/memory.db
 ```
 
-This means existing Agent-OS, Claude Code, Codex, and Hermes workflows remain supported.
+Current native sources are indexed in place rather than copied into a second Memory truth store.
 
-# Install
-
-Run from the repository you want to give memory to.
-
-### macOS / Linux
+Workspace recall is isolated by default:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main/install.sh | bash
+python scripts/ai-verse-memory/memory.py recall "<query>" --workspace <id>
 ```
 
-### Windows PowerShell
+Cross-workspace recall requires `--all-workspaces`.
 
-```powershell
-irm https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main/install.ps1 | iex
-```
+Native reads and writes validate physical path containment. Symlinked owner boundaries that escape or cross scope are rejected.
 
-The installer is idempotent and automatically selects native AI-Verse OS v2 or standalone mode.
+## Historical learning evidence
 
-## What native installation does
+Historical types include `fact`, `preference`, `constraint`, `state`, `entity`, `event`, `experience`, `workflow`, `lesson`, and `correction`. Legacy `decision` and `project_state` remain accepted for compatibility.
 
-1. installs the neutral Memory engine under `scripts/ai-verse-memory/`;
-2. installs matching Claude and Codex skill adapters;
-3. attaches `ai-verse-memory` in `.aiverse/extensions/registry.json` using the shared lock/atomic-replace contract;
-4. migrates only exact legacy Memory-owned blocks/stanzas out of tracked `AGENTS.md`, `CLAUDE.md`, or `skills/registry.yaml`; ambiguous user-modified legacy content is left untouched;
-5. initializes the derived SQLite index;
-6. runs `doctor`;
-7. leaves canonical operator/workspace Memory and any old standalone `.ai-verse-memory/` store untouched unless the user deliberately migrates it.
+For self-learning, Memory owns only historical evidence:
 
-Normal native install/update does **not** add a Memory block to `AGENTS.md`, `CLAUDE.md`, `AI-VERSE.yaml`, or `skills/registry.yaml`.
+- what happened;
+- whether it succeeded or failed;
+- corrections;
+- lessons;
+- provenance and evidence references.
 
-# Attachment lifecycle
+Memory does not store executable Skill packages and does not decide strategic promotion. Skills owns Skill lifecycle. Brain owns strategic evaluation.
 
-Native attachment can be changed without deleting canonical Memory:
+## Memory-first, OS-later adoption
+
+Plan and fingerprint the source:
 
 ```bash
-python scripts/install.py --target /path/to/AI-Verse-OS --action disable
-python scripts/install.py --target /path/to/AI-Verse-OS --action enable
-python scripts/install.py --target /path/to/AI-Verse-OS --action detach
+python scripts/component.py --target /path/to/AI-Verse-OS migrate \
+  --source-root /path/to/old-project
 ```
 
-`disable` keeps the registration but marks it unavailable. `detach` removes only Memory's local registry entry. Both preserve operator/workspace atomic Memory and the installed engine/adapters; re-running the normal installer can attach/repair it again.
-
-Standalone state is never automatically detached, deleted, or converted into native state. Migration remains explicit.
-
-If Memory existed before AI-Verse OS, install OS into a clean root and use `migrate-legacy --source-root <old-project>` from the newly attached native Memory engine. The old standalone store remains untouched. See [migration/MIGRATION.md](migration/MIGRATION.md).
-
-# Core commands
-
-Native examples:
+Apply only after review:
 
 ```bash
-python scripts/ai-verse-memory/memory.py mode
-python scripts/ai-verse-memory/memory.py doctor
-python scripts/ai-verse-memory/memory.py status
-python scripts/ai-verse-memory/memory.py remember --type experience --scope operator --text "A useful historical lesson"
-python scripts/ai-verse-memory/memory.py remember --type state --workspace example --text "The workspace moved to supervised testing"
-python scripts/ai-verse-memory/memory.py recall "supervised testing" --workspace example
-python scripts/ai-verse-memory/memory.py supersede <memory-id> --text "Updated historical state"
-python scripts/ai-verse-memory/memory.py rebuild
+python scripts/component.py --target /path/to/AI-Verse-OS migrate \
+  --source-root /path/to/old-project \
+  --apply
 ```
 
-Standalone uses the same commands through `.ai-verse-memory/memory.py`.
+Apply refuses if the reviewed source or target workspace topology drifted.
 
-## Workspace isolation
+When every blocking record is resolved and destination verification succeeds, Memory records a canonical authority handoff, marks the old standalone store retired, retires the supported old writer when present, and preserves the old historical Markdown as evidence.
 
-Native recall with:
+If unresolved or invalid records remain, authority handoff does not occur. Two writable canonical Memory routes are never declared valid.
 
-```bash
---workspace example
-```
+See [migration/MIGRATION.md](migration/MIGRATION.md).
 
-searches the selected workspace plus operator-level context. It does not search unrelated workspaces.
+## Concurrency and durability
 
-Cross-workspace search requires the explicit flag:
+Canonical Memory mutation is serialized across processes. File effects use atomic replacement, stale mutation locks can recover, supersession uses a recovery journal, and retryable remember effects can use durable idempotency receipts.
 
-```bash
---all-workspaces
-```
+The SQLite index remains derived and rebuildable.
 
-This is deliberate. Memory follows the same privacy and context-isolation boundary as AI-Verse OS.
+## Release and acceptance
 
-# What is indexed in native mode
+CI covers Python 3.9 and 3.12 on Linux, macOS, and Windows. A separate public-beta acceptance gate exercises lifecycle, migration, containment, and idempotency on all three operating systems.
 
-Without copying or replacing the original files, the engine indexes:
-
-- `operator/profile/*.md`
-- `operator/context/*.md`
-- `operator/decisions/**/*.md`
-- operator memory summaries and atomic memories
-- each `WORKSPACE.yaml`
-- workspace context
-- workspace decisions
-- workspace memory summaries and atomic memories
-
-The full `knowledge/` tree is intentionally not swallowed into the memory index. Deeper knowledge retrieval remains an AI-Verse OS routing responsibility.
-
-# Atomic memory model
-
-Atomic memory keeps metadata for:
-
-- `id`
-- `type`
-- `scope`
-- `status`
-- `importance`
-- `confidence`
-- `created_at`
-- `updated_at`
-- `valid_from`
-- `valid_to`
-- `supersedes`
-- `superseded_by`
-- `source`
-- `tags`
-
-Normal recall prefers active entries, exact workspace scope, lexical relevance, importance, confidence, canonical-source authority, and recency.
-
-# Legacy v0.1 migration
-
-If v0.1 was already installed inside AI-Verse OS v2, the v0.2 installer does not delete or silently move it.
-
-Dry run:
-
-```bash
-python scripts/ai-verse-memory/memory.py migrate-legacy
-```
-
-Apply after reviewing the report:
-
-```bash
-python scripts/ai-verse-memory/memory.py migrate-legacy --apply
-```
-
-`global` becomes operator memory. `project:<id>`, `client:<id>`, and `workspace:<id>` move only when a matching v2 workspace exists. Unknown scopes remain unresolved rather than leaking into the wrong workspace.
-
-# Health and QC
-
-```bash
-python scripts/ai-verse-memory/memory.py doctor
-```
-
-Native `doctor` checks storage, SQLite, FTS fallback, rebuildability, workspace isolation, Claude/Codex skill parity, the local extension attachment, absence of obsolete tracked Memory registrations, and a clean Claude adapter.
-
-The repository CI tests Python 3.9 and 3.12 on Linux, macOS, and Windows, plus standalone and AI-Verse OS v2 installer smoke tests.
-
-# Optional future retrieval tiers
-
-The core remains lexical and local. Future semantic or larger-scale backends should be optional derived adapters only:
-
-```text
-Tier 0: SQLite FTS / lexical fallback, always available
-Tier 1: optional local semantic index
-Tier 2: optional larger external index for very large installations
-```
-
-None of those tiers may become the canonical memory store. Markdown remains truth.
-
-# Security
-
-AI-Verse Memory is not a secret manager. Do not automatically persist credentials, tokens, private keys, recovery codes, financial credentials, government identifiers, or other highly sensitive information. See `SECURITY.md`.
+The exact immutable public-beta artifact is recorded under `releases/` after the candidate commit passes acceptance. Bootstrap references are then pinned to that exact commit instead of mutable `main`.
 
 ## License
 
