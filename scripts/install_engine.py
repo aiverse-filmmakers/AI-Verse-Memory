@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-VERSION = "0.2.0"
+VERSION = "0.3.0-beta.1"
 BASE_URL = "https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main"
 MARKER_START = "<!-- AI-VERSE-MEMORY:START -->"
 MARKER_END = "<!-- AI-VERSE-MEMORY:END -->"
@@ -108,19 +108,56 @@ def _ensure_extension_dir(target: Path) -> Path:
     return extensions
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _registry_lock_is_stale(lock: Path) -> bool:
+    try:
+        age = max(0.0, __import__("time").time() - lock.stat().st_mtime)
+    except OSError:
+        return False
+    if age < 600:
+        return False
+    try:
+        payload = json.loads(lock.read_text(encoding="utf-8"))
+        pid = int(payload.get("pid") or 0)
+    except Exception:
+        pid = 0
+    return not _pid_alive(pid)
+
+
 @contextmanager
 def _registry_lock(target: Path):
     extensions = _ensure_extension_dir(target)
     lock = extensions / "registry.json.lock"
-    try:
-        fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError as exc:
-        raise RuntimeError(f"Local extension registry is busy: {lock}") from exc
-    except OSError as exc:
-        raise RuntimeError(f"Could not acquire local extension registry lock: {exc}") from exc
+    for attempt in range(2):
+        try:
+            fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError as exc:
+            if attempt == 0 and _registry_lock_is_stale(lock):
+                try:
+                    lock.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            raise RuntimeError(f"Local extension registry is busy: {lock}") from exc
+        except OSError as exc:
+            raise RuntimeError(f"Could not acquire local extension registry lock: {exc}") from exc
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"extension_id": "ai-verse-memory"}, handle)
+            json.dump({"extension_id": "ai-verse-memory", "pid": os.getpid()}, handle)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -322,6 +359,7 @@ def run_engine(engine: Path, target: Path, command: str) -> None:
 def install_native(target: Path, source_dir: Optional[Path]) -> None:
     engine_root = target / "scripts" / "ai-verse-memory"
     source_copy("scripts/memory.py", engine_root / "memory.py", source_dir)
+    source_copy("scripts/component.py", engine_root / "component.py", source_dir)
     source_copy("protocol/MEMORY-PROTOCOL.md", engine_root / "MEMORY-PROTOCOL.md", source_dir)
     source_copy("migration/MIGRATION.md", engine_root / "MIGRATION.md", source_dir)
     install_skills(target, source_dir)
@@ -375,7 +413,19 @@ def detach_native(target: Path) -> None:
 
 def install_standalone(target: Path, source_dir: Optional[Path]) -> None:
     runtime = target / ".ai-verse-memory"
+    authority = runtime / "AUTHORITY.json"
+    if authority.exists():
+        try:
+            authority_payload = json.loads(authority.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Standalone Memory authority marker is unreadable: {authority}") from exc
+        if authority_payload.get("status") == "retired":
+            raise RuntimeError(
+                "This standalone Memory store was retired after canonical authority handoff; "
+                "refusing to reactivate the old writable canonical route"
+            )
     source_copy("scripts/memory.py", runtime / "memory.py", source_dir)
+    source_copy("scripts/component.py", runtime / "component.py", source_dir)
     source_copy("protocol/MEMORY-PROTOCOL.md", runtime / "MEMORY-PROTOCOL.md", source_dir)
     source_copy("migration/MIGRATION.md", runtime / "MIGRATION.md", source_dir)
     source_copy("templates/scenario.md", runtime / "SCENARIO-TEMPLATE.md", source_dir)
