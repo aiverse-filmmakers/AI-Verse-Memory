@@ -123,7 +123,13 @@ def _safe_child_dir(parent: Path, name: str, *, create: bool = True) -> Path:
         if child.is_symlink() or not child.is_dir():
             raise RuntimeError(f"Unsafe canonical directory: {child}")
     elif create:
-        child.mkdir(mode=0o700)
+        try:
+            child.mkdir(mode=0o700)
+        except FileExistsError:
+            # Another serialized contender may have created the same owner
+            # directory between the existence check and mkdir. Revalidate it.
+            if child.is_symlink() or not child.is_dir():
+                raise RuntimeError(f"Unsafe canonical directory: {child}")
     else:
         return child
     child_real = child.resolve(strict=True)
