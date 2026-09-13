@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-VERSION = "0.2.0"
+VERSION = "0.3.0-beta.1"
 MODE_NATIVE = "ai-verse-os-v2"
 MODE_STANDALONE = "standalone"
 
@@ -30,6 +30,8 @@ MEMORY_TYPES = {
     "event",
     "experience",
     "workflow",
+    "lesson",
+    "correction",
 }
 
 SKIP_DIRS = {
@@ -335,8 +337,13 @@ def render_frontmatter(meta: Dict[str, str]) -> str:
         "supersedes",
         "superseded_by",
         "source",
+        "evidence_refs",
         "tags",
         "legacy_scope",
+        "migration_source_path",
+        "migration_source_sha256",
+        "migration_source_fingerprint",
+        "migrated_at",
     ]
     lines = ["---"]
     emitted = set()
@@ -1736,6 +1743,13 @@ def build_parser() -> argparse.ArgumentParser:
     remember_p.add_argument("--why", default="")
     remember_p.add_argument("--tags", default="")
     remember_p.add_argument("--valid-from", default="")
+    remember_p.add_argument("--effect-id", default="", help="Durable idempotency key for retry-safe writes")
+    remember_p.add_argument(
+        "--evidence-ref",
+        action="append",
+        default=[],
+        help="Evidence/provenance reference for lesson, correction, experience, or other historical memory",
+    )
     remember_p.add_argument("--force", action="store_true")
 
     recall_p = sub.add_parser("recall", help="Retrieve a small relevant set without crossing workspace boundaries")
@@ -1822,6 +1836,8 @@ def main() -> int:
                 force=args.force,
                 root=root,
                 mode=mode,
+                effect_id=args.effect_id,
+                evidence_refs=args.evidence_ref,
             )
             print(f"{'Remembered' if created else 'Duplicate active memory already exists'}: {mem_id}")
             print(relpath(path, root))

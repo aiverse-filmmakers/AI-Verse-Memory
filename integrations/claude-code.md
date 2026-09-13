@@ -1,43 +1,41 @@
 # Claude Code Integration
 
-AI-Verse Memory supports two Claude integration modes.
+## Native AI-Verse OS mode
 
-## AI-Verse OS v2 native mode
+Public setup installs:
 
-AI-Verse OS v2 treats `AGENTS.md` as the canonical runtime contract and `CLAUDE.md` as a Claude adapter. The installer therefore:
+```text
+.claude/skills/ai-verse-memory/SKILL.md
+scripts/ai-verse-memory/
+```
 
-1. installs `.claude/skills/ai-verse-memory/SKILL.md`;
-2. installs the neutral engine at `scripts/ai-verse-memory/memory.py`;
-3. adds one bounded Memory integration block to `AGENTS.md`;
-4. does not duplicate standing Memory guidance in `CLAUDE.md`;
-5. registers the capability in `skills/registry.yaml` when the expected registry is present.
+and attaches Memory through:
 
-Claude should follow normal AI-Verse routing, identify the workspace, then use scoped recall only when prior history can materially change the work.
+```text
+.aiverse/extensions/registry.json
+```
+
+Memory does not add a standing native block to tracked `AGENTS.md` or `CLAUDE.md`, and it does not register itself in tracked `skills/registry.yaml`.
+
+Claude follows normal host routing, identifies the active workspace, then uses scoped Memory recall only when history can materially change the work.
 
 ```bash
 python scripts/ai-verse-memory/memory.py recall "<topic>" --workspace <id>
 ```
 
-Current OS context remains more authoritative than historical memory.
+Current canonical host context remains more authoritative than historical Memory.
 
 ## Standalone mode
 
-For a generic Agent-OS repository, the installer keeps the original model:
+Standalone setup keeps the portable integration:
 
 - `.claude/skills/ai-verse-memory/SKILL.md`
 - `.ai-verse-memory/`
-- one standing Memory block in `CLAUDE.md` and `AGENTS.md`
+- one bounded Memory block in `AGENTS.md` and `CLAUDE.md`
 
-## Verify
-
-Native:
+## Lifecycle verification
 
 ```bash
-python scripts/ai-verse-memory/memory.py doctor
-```
-
-Standalone:
-
-```bash
-python .ai-verse-memory/memory.py doctor
+python scripts/component.py --target <root> --json status
+python scripts/component.py --target <root> --json doctor
 ```

@@ -1,116 +1,134 @@
 # Historical Memory Migration
 
-AI-Verse Memory v0.2 supports three migration situations through two deliberate workflows.
+AI-Verse Memory public beta uses explicit, snapshot-bound adoption. Migration is separate from setup because copying history and transferring canonical authority are different effects.
 
-## A. Existing Agent-OS context into memory
+## Existing Agent-OS history
 
-Use `discover` to find likely historical sources, then let the connected agent distill only durable history.
+Use `discover` to identify likely historical sources, then distill only durable history:
 
 ```bash
 python <memory-engine> discover . --output <migration-report-path>
 ```
 
-Do not import every file. Preserve provenance, avoid transient chatter, and do not duplicate information already represented canonically.
+Do not bulk-import current profile/context/decision/knowledge files. Those remain authoritative where their current owner keeps them.
 
-In AI-Verse OS v2, current profile/context/decision/knowledge files remain authoritative where they already live. Historical migration should not copy those files wholesale into atomic memory.
+Good historical candidates include events, state transitions, corrections, lessons, durable past constraints, entity history, and workflow experiences.
 
-Useful atomic migration candidates include:
-
-- important past events
-- state transitions
-- lessons from failures or successful work
-- entity history that matters later
-- old constraints that explain later decisions
-- historical facts no longer represented in current context
-- workflow experiences that may later become skills
-
-## B. AI-Verse Memory v0.1 into AI-Verse OS v2
-
-If `.ai-verse-memory/` already exists inside an AI-Verse OS v2 repository, use the dedicated migration command.
+## Legacy AI-Verse Memory into native AI-Verse OS
 
 ### 1. Dry run
 
+Local legacy store:
+
 ```bash
-python scripts/ai-verse-memory/memory.py migrate-legacy
+python scripts/ai-verse-memory/memory.py --root <new-os> migrate-legacy
 ```
 
-The engine maps:
+External Memory-first source:
 
-- `global` -> `operator`
-- `project:<id>` -> `workspace:<id>` only when that workspace exists
-- `client:<id>` -> `workspace:<id>` only when that workspace exists
-- `workspace:<id>` -> the matching workspace
+```bash
+python scripts/ai-verse-memory/memory.py --root <new-os> migrate-legacy \
+  --source-root <old-project>
+```
 
-Unknown scopes are reported as unresolved instead of being silently placed in the wrong workspace.
+The dry run creates:
 
-### 2. Review the report
+```text
+operator/memory/migrations/legacy-ai-verse-memory-plan.json
+operator/memory/migrations/legacy-ai-verse-memory-migration.md
+```
 
-Review `operator/memory/migrations/legacy-ai-verse-memory-migration.md`.
+The plan records:
 
-The dry run does not copy atomic memories.
+- the validated source root;
+- a fingerprint of source memory paths and bytes;
+- target workspace-topology fingerprint;
+- record-by-record scope mapping;
+- blocking unresolved/invalid records.
+
+Scope mapping is conservative:
+
+- `global` and `operator` -> `operator`;
+- `project:<id>`, `client:<id>`, and `workspace:<id>` -> matching workspace only;
+- unknown scopes remain unresolved.
+
+### 2. Review
+
+Review the plan and report. The source may continue to operate during review, but any later source drift invalidates apply and requires a new dry run.
 
 ### 3. Apply
 
 ```bash
-python scripts/ai-verse-memory/memory.py migrate-legacy --apply
-```
-
-The migration:
-
-- preserves memory IDs and chronology;
-- preserves provenance;
-- rewrites only the scope needed for the v2 architecture;
-- skips existing IDs;
-- leaves the old `.ai-verse-memory/` directory untouched;
-- rebuilds the derived index after copying.
-
-### 4. Review old profile/scenario material separately
-
-The migration deliberately does not auto-promote `.ai-verse-memory/profile.md` or scenario summaries into AI-Verse OS profile/context. Those are summaries from the old architecture and may be stale or overlap newer canonical sources.
-
-If still useful, distill them manually into the correct operator/workspace source with provenance.
-
-## C. Memory existed before AI-Verse OS
-
-Do **not** install AI-Verse OS over an arbitrary non-empty standalone project merely to preserve install order.
-
-Install AI-Verse OS into a clean root, install/attach Memory there, then point the native Memory engine at the old standalone project:
-
-```bash
-python <new-ai-verse-os>/scripts/ai-verse-memory/memory.py \
-  --root <new-ai-verse-os> \
-  migrate-legacy \
-  --source-root <old-standalone-project>
-```
-
-Review the generated migration report first. Apply only after review:
-
-```bash
-python <new-ai-verse-os>/scripts/ai-verse-memory/memory.py \
-  --root <new-ai-verse-os> \
-  migrate-legacy \
-  --source-root <old-standalone-project> \
+python scripts/ai-verse-memory/memory.py --root <new-os> migrate-legacy \
+  --source-root <old-project> \
   --apply
 ```
 
-`--source-root` may point either to the old project root or directly to its `.ai-verse-memory/` directory.
+Apply requires the reviewed dry-run plan.
 
-The external source store remains byte-for-byte untouched by migration. Symlinked/escaping legacy memory files are rejected rather than followed. This is the supported order-independent path for "Memory first, OS later": package/state can predate OS, but adoption into a native OS is explicit rather than an unsafe in-place OS overwrite.
+It refuses when:
 
-## Validation
+- source memory bytes changed after review;
+- target workspace topology changed after review;
+- a destination ID conflicts with different canonical content.
 
-After migration run:
+Migrated records preserve IDs, chronology, original provenance when present, and add migration provenance including source path, source digest, source snapshot fingerprint, and migration timestamp.
 
-```bash
-python <memory-engine> rebuild
-python <memory-engine> doctor
-python <memory-engine> status
+If a valid old record has no `source`, fallback provenance is based on the validated old source path. External sources do not need to be relative to the new OS root.
+
+### 4. Authority handoff
+
+A successful copy is not automatically a successful authority handoff.
+
+Handoff occurs only when blocking unresolved/invalid records are zero and destination verification succeeds.
+
+The new native store records:
+
+```text
+operator/memory/.ai-verse-memory-state/authority-handoff.json
 ```
 
-Test representative recalls for operator context, a workspace, a superseded memory, and an old lesson.
+The old standalone store records:
 
-Only then mark the migration complete:
+```text
+.ai-verse-memory/AUTHORITY.json
+```
+
+with status `retired`.
+
+If the old store contains the supported `.ai-verse-memory/memory.py` writer, it is backed up and replaced by a retirement stub. Historical memory Markdown under `memories/` is not rewritten by the handoff.
+
+This preserves evidence without preserving competing writable authority.
+
+### 5. Completion
+
+After representative recall verification:
 
 ```bash
-python <memory-engine> migration-complete --summary "Reviewed and migrated durable historical memory."
+python <memory-engine> migration-complete \
+  --summary "Reviewed historical migration and verified canonical handoff."
 ```
+
+When a migration plan exists, `migration-complete` refuses unless the handoff receipt matches the reviewed source fingerprint.
+
+If unresolved/invalid records remain, the old route stays active and the new component remains `migration-required`. Resolve the blockers, generate a new dry-run plan, then apply again.
+
+## Public lifecycle shortcut
+
+The standard component CLI exposes the same explicit adoption:
+
+```bash
+python scripts/component.py --target <new-os> migrate --source-root <old-project>
+python scripts/component.py --target <new-os> migrate --source-root <old-project> --apply
+```
+
+`setup` only detects migration need. It never calls apply automatically.
+
+## Safety invariants
+
+- No migration leaves two declared writable canonical Memory stores.
+- Source drift after review fails closed.
+- Destination scope is verified.
+- Source history remains evidence after retirement.
+- Symlinked or escaping source/destination paths are rejected.
+- Migration can be retried safely because existing matching IDs are recognized rather than duplicated.

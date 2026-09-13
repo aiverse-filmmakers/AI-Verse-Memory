@@ -1,18 +1,61 @@
 {
   "name": "ai-verse-memory",
   "display_name": "AI-Verse Memory",
-  "version": "0.2.0",
-  "description": "A local-first persistent memory engine with native AI-Verse OS v2 workspace isolation, canonical-source indexing, provenance, supersession, and rebuildable SQLite recall.",
+  "version": "0.3.0-beta.1",
+  "description": "Local-first historical Memory with native AI-Verse OS ownership, provenance, safe adoption, and rebuildable SQLite recall.",
   "license": "MIT",
   "author": "AI-VERSE",
   "repository": "https://github.com/aiverse-filmmakers/AI-Verse-Memory",
   "entrypoint": "scripts/memory.py",
-  "installer": "scripts/install.py",
+  "component_cli": "scripts/component.py",
+  "legacy_installer": "scripts/install.py",
   "skill": "SKILL.md",
   "protocol": "protocol/MEMORY-PROTOCOL.md",
   "migration": "migration/MIGRATION.md",
-  "supported_agents": ["claude-code", "codex", "hermes"],
-  "integration_modes": ["ai-verse-os-v2", "standalone"],
+  "supported_agents": [
+    "claude-code",
+    "codex",
+    "hermes"
+  ],
+  "integration_modes": [
+    "ai-verse-os-v2",
+    "standalone"
+  ],
+  "lifecycle": {
+    "public_commands": [
+      "install",
+      "setup",
+      "status",
+      "doctor",
+      "enable",
+      "disable",
+      "update",
+      "uninstall"
+    ],
+    "expert_commands": [
+      "reconcile",
+      "detach",
+      "migrate"
+    ],
+    "structured_status_json": true,
+    "install_implies_setup": false,
+    "setup_transfers_authority": false,
+    "uninstall_preserves_state": true,
+    "reconcile_rediscovers_preserved_state": true
+  },
+  "ownership": {
+    "native_current_truth": "host-owned",
+    "historical_atomic_memory": "memory-owned",
+    "self_learning_surfaces": [
+      "experience",
+      "lesson",
+      "correction",
+      "source",
+      "evidence_refs"
+    ],
+    "owns_skills": false,
+    "owns_brain_strategy": false
+  },
   "runtime": {
     "python": ">=3.9",
     "external_services": false,

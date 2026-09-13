@@ -1,25 +1,36 @@
 # Codex Integration
 
-AI-Verse Memory installs the same execution contract into `.agents/skills/ai-verse-memory/SKILL.md`.
+## Native AI-Verse OS mode
 
-## AI-Verse OS v2 native mode
-
-The neutral engine lives at:
+Public setup installs the Memory adapter at:
 
 ```text
-scripts/ai-verse-memory/memory.py
+.agents/skills/ai-verse-memory/SKILL.md
 ```
 
-Codex should read the AI-Verse OS runtime contract, identify the active workspace, and use workspace-scoped recall:
+The neutral engine and lifecycle live under:
+
+```text
+scripts/ai-verse-memory/
+```
+
+Attachment is local through `.aiverse/extensions/registry.json`. Memory does not modify tracked `AGENTS.md`, `CLAUDE.md`, or `skills/registry.yaml` in native mode.
+
+Codex identifies the active workspace and uses scoped recall:
 
 ```bash
 python scripts/ai-verse-memory/memory.py recall "<topic>" --workspace <id>
 ```
 
-The installer keeps the Claude and Codex `SKILL.md` files identical so AI-Verse OS architecture checks do not report adapter drift.
-
-`AGENTS.md` remains the canonical standing contract. Memory does not add a second standing block to the Claude adapter.
+The Claude and Codex Memory Skill adapters remain identical.
 
 ## Standalone mode
 
-Codex uses `.agents/skills/ai-verse-memory/SKILL.md` and the `.ai-verse-memory/` engine/store.
+Codex uses `.agents/skills/ai-verse-memory/SKILL.md` together with the `.ai-verse-memory/` portable store.
+
+## Lifecycle verification
+
+```bash
+python scripts/component.py --target <root> --json status
+python scripts/component.py --target <root> --json doctor
+```
