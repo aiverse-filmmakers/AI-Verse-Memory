@@ -36,7 +36,8 @@ class ComponentLifecycleAcceptanceTests(unittest.TestCase):
             self.assertEqual(installed["state"], "setup-required")
             self.assertTrue(installed["installed"])
             self.assertFalse(installed["attached"])
-            self.assertFalse((target / ".aiverse/extensions/registry.json").exists())
+            registry = json.loads((target / ".aiverse/extensions/registry.json").read_text(encoding="utf-8"))
+            self.assertNotIn("ai-verse-memory", registry["extensions"])
 
             setup = component._setup(target, ROOT)
             self.assertEqual(setup["state"], "ready")
