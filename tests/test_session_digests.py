@@ -267,6 +267,31 @@ class SessionDigestTests(unittest.TestCase):
             finally:
                 os.environ.pop("AI_VERSE_MEMORY_HOME", None)
 
+    def test_digest_requires_authoritative_source_reference_and_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            with self.assertRaisesRegex(ValueError, "source_refs must contain"):
+                mem.write_session_digest(
+                    "sess-no-source",
+                    "A digest without source evidence must not be accepted.",
+                    scope="workspace:alpha",
+                    topic="Missing source",
+                    source_refs=[],
+                    root=root,
+                    mode=mem.MODE_NATIVE,
+                )
+            with self.assertRaisesRegex(ValueError, "source_coverage must contain"):
+                mem.write_session_digest(
+                    "sess-no-coverage",
+                    "A digest with empty explicit coverage must not be accepted.",
+                    scope="workspace:alpha",
+                    topic="Missing coverage",
+                    source_refs=["gateway:session:sess-no-coverage"],
+                    source_coverage=[],
+                    root=root,
+                    mode=mem.MODE_NATIVE,
+                )
+
     def test_bounds_reject_transcript_sized_digest_instead_of_silently_truncating(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._native_root(Path(tmp))
