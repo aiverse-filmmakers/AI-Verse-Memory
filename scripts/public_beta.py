@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 PUBLIC_BETA_SCHEMA = 1
 LOCK_STALE_SECONDS = 600
-LOCK_WAIT_SECONDS = 10
+LOCK_WAIT_SECONDS = 30
 _LOCK_LOCAL = threading.local()
 
 
