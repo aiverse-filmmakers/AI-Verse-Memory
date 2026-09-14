@@ -26,7 +26,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 PUBLIC_BETA_SCHEMA = 1
 LOCK_STALE_SECONDS = 600
-LOCK_WAIT_SECONDS = 30
+LOCK_DEAD_PROCESS_GRACE_SECONDS = 2
+LOCK_WAIT_SECONDS = 120
 _LOCK_LOCAL = threading.local()
 
 
@@ -233,14 +234,24 @@ def _lock_is_stale(lock: Path) -> bool:
         age = max(0.0, time.time() - lock.stat().st_mtime)
     except OSError:
         return False
-    if age < LOCK_STALE_SECONDS:
-        return False
+
     pid = 0
     try:
         payload = json.loads(lock.read_text(encoding="utf-8"))
         pid = int(payload.get("pid") or 0)
     except Exception:
         pid = 0
+
+    # A parsed dead owner is safe to reclaim quickly after a short creation
+    # grace. This prevents crashed processes from forcing healthy callers to
+    # consume the full live-holder wait budget.
+    if pid > 0 and age >= LOCK_DEAD_PROCESS_GRACE_SECONDS and not _pid_alive(pid):
+        return True
+
+    # Missing/partial metadata may be a writer still filling the newly-created
+    # lock file. Only the long stale threshold can reclaim that ambiguous case.
+    if age < LOCK_STALE_SECONDS:
+        return False
     return not _pid_alive(pid)
 
 
