@@ -1,0 +1,78 @@
+{
+  "schema_version": "ai-verse.component-release/v1",
+  "component_id": "ai-verse-memory",
+  "version": "0.3.0-beta.1",
+  "revision": "031e1e77c97ed3c9012235c7ffe0a4ece05e3695",
+  "release_status": "accepted",
+  "package": {
+    "repository": "aiverse-filmmakers/AI-Verse-Memory",
+    "source_type": "git",
+    "package_name": null,
+    "integrity": null
+  },
+  "supported_platforms": [
+    "linux",
+    "macos",
+    "windows"
+  ],
+  "runtime_requirements": {
+    "python": ">=3.9",
+    "node": null,
+    "other": []
+  },
+  "lifecycle": {
+    "install": true,
+    "setup": true,
+    "status": true,
+    "doctor": true,
+    "enable": true,
+    "disable": true,
+    "update": true,
+    "uninstall": true
+  },
+  "state": {
+    "canonical_state_owned": true,
+    "preserve_on_update": true,
+    "preserve_on_uninstall": true,
+    "preserve_unknown_user_files": true,
+    "state_format": null
+  },
+  "migration": {
+    "compatibility": "none-required",
+    "from_versions": [],
+    "requires_explicit_migration": false,
+    "owner_controlled": true,
+    "checkpoint_policy": "not-required"
+  },
+  "authority": {
+    "grants_permissions": false,
+    "changes_direction_owner": false,
+    "changes_scope": false,
+    "enables_disabled_component": false,
+    "exposes_remote_listener": false
+  },
+  "evidence": {
+    "ci": [
+      {
+        "kind": "distribution-core-ci",
+        "status": "pass",
+        "revision": "031e1e77c97ed3c9012235c7ffe0a4ece05e3695",
+        "run_id": "34782949282",
+        "url": "https://github.com/aiverse-filmmakers/ai-verse-distribution/actions/runs/34782949282"
+      }
+    ],
+    "acceptance": [
+      {
+        "kind": "distribution-core-clean-machine",
+        "status": "pass",
+        "revision": "031e1e77c97ed3c9012235c7ffe0a4ece05e3695",
+        "run_id": "34782949287",
+        "url": "https://github.com/aiverse-filmmakers/ai-verse-distribution/actions/runs/34782949287"
+      }
+    ]
+  },
+  "semantics": {
+    "release_metadata_only": true,
+    "live_health_truth": false
+  }
+}

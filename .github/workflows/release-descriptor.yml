@@ -1,0 +1,48 @@
+name: Release Descriptor
+
+on:
+  pull_request:
+    paths:
+      - "release/component-release.json"
+      - ".github/workflows/release-descriptor.yml"
+  push:
+    branches: [main]
+    paths:
+      - "release/component-release.json"
+      - ".github/workflows/release-descriptor.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate release descriptor
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, re
+          from pathlib import Path
+          d=json.loads(Path("release/component-release.json").read_text())
+          assert d["schema_version"]=="ai-verse.component-release/v1"
+          assert d["component_id"]=="ai-verse-memory"
+          assert re.fullmatch(r"[0-9a-f]{40}", d["revision"])
+          assert d["semantics"]=={"release_metadata_only": True, "live_health_truth": False}
+          for key in ("preserve_on_update","preserve_on_uninstall","preserve_unknown_user_files"):
+              assert d["state"][key] is True
+          for key in ("grants_permissions","changes_direction_owner","changes_scope","enables_disabled_component","exposes_remote_listener"):
+              assert d["authority"][key] is False
+          for group in ("ci","acceptance"):
+              assert d["evidence"][group]
+              assert all(e["status"]=="pass" and e["revision"]==d["revision"] for e in d["evidence"][group])
+          print("descriptor structure OK", d["component_id"], d["version"], d["revision"])
+          PY
+          REVISION="$(python -c 'import json; print(json.load(open("release/component-release.json"))["revision"])')"
+          git cat-file -e "$REVISION^{commit}"
