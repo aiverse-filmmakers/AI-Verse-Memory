@@ -26,9 +26,7 @@ def _load_sibling(module_name: str, filename: str):
 _compat = _load_sibling("_aiverse_memory_os_compat", "os_compat.py")
 _engine = _load_sibling("_aiverse_memory_engine", "memory_engine.py")
 _public_beta = _load_sibling("_aiverse_memory_public_beta", "public_beta.py")
-_session_digest = _load_sibling("_aiverse_memory_session_digest", "session_digest.py")
 _public_beta.apply(_engine)
-_session_digest.apply(_engine)
 
 # Preserve the established public/module surface, including private helpers used
 # by the repository acceptance suite, while keeping the implementation payload
