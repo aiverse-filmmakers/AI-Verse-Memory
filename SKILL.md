@@ -94,7 +94,9 @@ Corrections must name the historical Memory ID they supersede. Do not create an 
 
 ## Orientation before deep recall
 
-Use `get_orientation_map` when a caller needs a tiny scoped catalog before targeted recall. The map is derived SQLite state only. It may expose counts, types, source routes, explicit tags/topics, and recent digest pointers, but never full atomic text, current-source bodies, digest summaries, or raw transcripts.
+Use `get_orientation_map` when a caller needs a tiny scoped catalog before targeted recall. The map is derived SQLite state only. It may expose counts, types, source routes, explicit tags/topics, recent digest pointers, and a deterministic source fingerprint, but never full atomic text, current-source bodies, digest summaries, or raw transcripts.
+
+Honor the configured byte budget. `max_bytes` or `AI_VERSE_ORIENTATION_MAP_MAX_BYTES` bounds serialized output, and deterministic truncation must preserve scope, fingerprint, counts, Memory-type counts, and source-kind counts. Use `get_orientation_map_diagnostics` for byte/token estimates, source counts, freshness, and truncation state; diagnostics must stay content-free and must not expose hidden reasoning.
 
 Treat the map as navigation, not evidence. Deeper Memory/digest/source reads remain authoritative.
 

@@ -8,17 +8,23 @@ digest pointers. It never copies full Memory text or digest summaries.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import sqlite3
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-ORIENTATION_MAP_SCHEMA = 1
+ORIENTATION_MAP_SCHEMA = 2
 MAX_TOPIC_ENTRIES = 12
 MAX_RECENT_DIGESTS = 8
 MAX_ROUTE_PATHS_PER_KIND = 2
+DEFAULT_MAX_BYTES = 8192
+MIN_MAX_BYTES = 1024
+MAX_MAX_BYTES = 65536
+BUDGET_ENV = "AI_VERSE_ORIENTATION_MAP_MAX_BYTES"
 
 
 def _stable_json(value: object) -> str:
@@ -28,6 +34,107 @@ def _stable_json(value: object) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _serialized_bytes(value: object) -> int:
+    return len(_stable_json(value).encode("utf-8"))
+
+
+def _resolve_budget(max_bytes: Optional[int]) -> int:
+    raw = max_bytes
+    if raw is None:
+        env = os.getenv(BUDGET_ENV, "").strip()
+        if env:
+            try:
+                raw = int(env)
+            except ValueError as exc:
+                raise ValueError(f"{BUDGET_ENV} must be an integer") from exc
+        else:
+            raw = DEFAULT_MAX_BYTES
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("orientation map max_bytes must be an integer")
+    if raw < MIN_MAX_BYTES or raw > MAX_MAX_BYTES:
+        raise ValueError(
+            f"orientation map max_bytes must be between {MIN_MAX_BYTES} and {MAX_MAX_BYTES}"
+        )
+    return raw
+
+
+def _fingerprint(
+    target_scope: str,
+    visible_scopes: Sequence[str],
+    atomic_rows: Sequence[Dict[str, str]],
+    indexed_sources: Sequence[Dict[str, str]],
+    digests: Sequence[Dict[str, str]],
+) -> str:
+    payload = {
+        "scope": target_scope,
+        "visible_scopes": list(visible_scopes),
+        "atomic": [
+            [row["id"], row["scope"], row["path"], row["source_version"]]
+            for row in atomic_rows
+        ],
+        "sources": [
+            [
+                row["id"],
+                row["kind"],
+                row["scope"],
+                row["path"],
+                row["source_version"],
+                row["freshness"],
+            ]
+            for row in indexed_sources
+        ],
+        "session_digests": [
+            [
+                row["id"],
+                row["scope"],
+                row["canonical_version"],
+                row["digest_fingerprint"],
+            ]
+            for row in digests
+        ],
+    }
+    digest = hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
+    return "sha256:" + digest
+
+
+def _enforce_budget(projection: Dict[str, Any], max_bytes: int) -> Dict[str, Any]:
+    bounded = json.loads(_stable_json(projection))
+    bounded["budget_bytes"] = max_bytes
+    bounded["truncated"] = False
+    if _serialized_bytes(bounded) <= max_bytes:
+        return bounded
+
+    bounded["truncated"] = True
+
+    # Routes retain kind/scope/count even when path samples are removed.
+    while _serialized_bytes(bounded) > max_bytes:
+        changed = False
+        for route in reversed(bounded.get("source_routes", [])):
+            paths = route.get("paths") or []
+            if paths:
+                paths.pop()
+                changed = True
+                break
+        if not changed:
+            break
+
+    while _serialized_bytes(bounded) > max_bytes and bounded.get("recent_sessions"):
+        bounded["recent_sessions"].pop()
+
+    while _serialized_bytes(bounded) > max_bytes and bounded.get("topics"):
+        bounded["topics"].pop()
+
+    while _serialized_bytes(bounded) > max_bytes and bounded.get("source_routes"):
+        bounded["source_routes"].pop()
+
+    size = _serialized_bytes(bounded)
+    if size > max_bytes:
+        raise ValueError(
+            f"orientation map core metadata requires {size} bytes, above configured budget {max_bytes}"
+        )
+    return bounded
 
 
 def _target_and_visible_scopes(
@@ -120,6 +227,7 @@ def _atomic_metadata(
                     if mode == engine.MODE_NATIVE
                     else str(path.resolve())
                 ),
+                "source_version": engine._source_version(path),
             }
         )
     rows.sort(key=lambda row: (row["scope"], row["type"], row["id"], row["path"]))
@@ -146,25 +254,42 @@ def _indexed_sources(
         placeholders = ",".join("?" for _ in visible_scopes)
         rows = conn.execute(
             f"""
-            SELECT id, kind, path, scope, status
-            FROM items
-            WHERE kind!='memory'
-              AND status='active'
-              AND scope IN ({placeholders})
-            ORDER BY scope, kind, path, id
+            SELECT i.id, i.kind, i.path, i.scope, i.status,
+                   s.source_version, s.freshness
+            FROM items i
+            LEFT JOIN source_state s ON s.item_id=i.id
+            WHERE i.kind!='memory'
+              AND i.status='active'
+              AND i.scope IN ({placeholders})
+            ORDER BY i.scope, i.kind, i.path, i.id
             """,
             list(visible_scopes),
         ).fetchall()
-        return [
-            {
-                "id": str(row["id"]),
-                "kind": str(row["kind"]),
-                "path": str(row["path"]),
-                "scope": str(row["scope"]),
-            }
-            for row in rows
-            if engine._indexed_source_is_valid(row, root, mode)
-        ]
+        result: List[Dict[str, str]] = []
+        for row in rows:
+            if not engine._indexed_source_is_valid(row, root, mode):
+                continue
+            stored_path = str(row["path"])
+            source_path = Path(stored_path)
+            if not source_path.is_absolute():
+                source_path = root / source_path
+            version = str(row["source_version"] or "")
+            if not version:
+                try:
+                    version = engine._source_version(source_path)
+                except OSError:
+                    continue
+            result.append(
+                {
+                    "id": str(row["id"]),
+                    "kind": str(row["kind"]),
+                    "path": stored_path,
+                    "scope": str(row["scope"]),
+                    "source_version": version,
+                    "freshness": str(row["freshness"] or "fresh"),
+                }
+            )
+        return result
     finally:
         conn.close()
 
@@ -181,7 +306,8 @@ def _session_digests(
         placeholders = ",".join("?" for _ in visible_scopes)
         rows = conn.execute(
             f"""
-            SELECT id, scope, session_id, run_id, topic, completed_at, created_at
+            SELECT id, scope, session_id, run_id, topic, completed_at, created_at,
+                   canonical_version, digest_fingerprint
             FROM session_digest_items
             WHERE scope IN ({placeholders})
             ORDER BY completed_at DESC, created_at DESC, id DESC
@@ -196,6 +322,8 @@ def _session_digests(
                 "run_id": str(row["run_id"] or ""),
                 "topic": str(row["topic"] or ""),
                 "completed_at": str(row["completed_at"] or row["created_at"] or ""),
+                "canonical_version": str(row["canonical_version"] or ""),
+                "digest_fingerprint": str(row["digest_fingerprint"] or ""),
             }
             for row in rows
         ]
@@ -285,6 +413,9 @@ def _projection(
     atomic_rows: Sequence[Dict[str, str]],
     indexed_sources: Sequence[Dict[str, str]],
     digests: Sequence[Dict[str, str]],
+    *,
+    source_fingerprint: str,
+    max_bytes: int,
 ) -> Dict[str, Any]:
     recent = [
         {
@@ -297,10 +428,11 @@ def _projection(
         }
         for row in digests[:MAX_RECENT_DIGESTS]
     ]
-    return {
+    projection = {
         "schema_version": ORIENTATION_MAP_SCHEMA,
         "scope": target_scope,
         "visible_scopes": list(visible_scopes),
+        "source_fingerprint": source_fingerprint,
         "counts": {
             "atomic_memory": len(atomic_rows),
             "indexed_sources": len(indexed_sources),
@@ -312,6 +444,7 @@ def _projection(
         "topics": _compact_topics(atomic_rows, digests),
         "recent_sessions": recent,
     }
+    return _enforce_budget(projection, max_bytes)
 
 
 def _install_rebuild(engine):
@@ -321,6 +454,7 @@ def _install_rebuild(engine):
         workspace: Optional[str] = None,
         root: Optional[Path] = None,
         mode: Optional[str] = None,
+        max_bytes: Optional[int] = None,
     ) -> Dict[str, Any]:
         root = Path(root or engine.repository_root()).resolve()
         mode = mode or engine.detect_mode(root)
@@ -335,12 +469,22 @@ def _install_rebuild(engine):
         atomic_rows = _atomic_metadata(engine, root, mode, visible_scopes)
         sources = _indexed_sources(engine, root, mode, visible_scopes)
         digests = _session_digests(engine, root, mode, visible_scopes)
+        budget = _resolve_budget(max_bytes)
+        source_fingerprint = _fingerprint(
+            target_scope,
+            visible_scopes,
+            atomic_rows,
+            sources,
+            digests,
+        )
         projection = _projection(
             target_scope,
             visible_scopes,
             atomic_rows,
             sources,
             digests,
+            source_fingerprint=source_fingerprint,
+            max_bytes=budget,
         )
 
         conn = _connect_projection(engine, root, mode)
@@ -366,18 +510,60 @@ def _install_get(engine):
         workspace: Optional[str] = None,
         root: Optional[Path] = None,
         mode: Optional[str] = None,
+        max_bytes: Optional[int] = None,
     ) -> Dict[str, Any]:
-        # B1 always refreshes before returning the projection. B2 may add a
-        # fingerprinted cache policy, byte budget, and diagnostics without
-        # weakening this freshness behavior.
+        # Always refresh from authoritative evidence before returning derived
+        # navigation. This makes a stale stored projection untrusted by design.
         return rebuild(
             scope=scope,
             workspace=workspace,
             root=root,
             mode=mode,
+            max_bytes=max_bytes,
         )
 
     return get_orientation_map
+
+
+def _install_diagnostics(engine):
+    def get_orientation_map_diagnostics(
+        *,
+        scope: Optional[str] = None,
+        workspace: Optional[str] = None,
+        root: Optional[Path] = None,
+        mode: Optional[str] = None,
+        max_bytes: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        projection = engine.get_orientation_map(
+            scope=scope,
+            workspace=workspace,
+            root=root,
+            mode=mode,
+            max_bytes=max_bytes,
+        )
+        size = _serialized_bytes(projection)
+        return {
+            "schema_version": 1,
+            "scope": projection["scope"],
+            "visible_scope_count": len(projection["visible_scopes"]),
+            "source_fingerprint": projection["source_fingerprint"],
+            "freshness": "fresh",
+            "projection_bytes": size,
+            "estimated_tokens": (size + 3) // 4,
+            "token_estimate_method": "utf8_bytes_div_4_ceiling",
+            "budget_bytes": projection["budget_bytes"],
+            "truncated": bool(projection["truncated"]),
+            "source_counts": dict(projection["counts"]),
+            "returned_entries": {
+                "memory_types": len(projection["memory_types"]),
+                "source_kinds": len(projection["source_kinds"]),
+                "source_routes": len(projection["source_routes"]),
+                "topics": len(projection["topics"]),
+                "recent_sessions": len(projection["recent_sessions"]),
+            },
+        }
+
+    return get_orientation_map_diagnostics
 
 
 def apply(engine) -> None:
@@ -391,6 +577,7 @@ def apply(engine) -> None:
         "_indexed_source_is_valid",
         "allowed_scopes",
         "refresh_session_digest_index",
+        "_source_version",
     )
     missing = [name for name in required if not hasattr(engine, name)]
     if missing:
@@ -401,6 +588,10 @@ def apply(engine) -> None:
 
     engine.rebuild_orientation_map = _install_rebuild(engine)
     engine.get_orientation_map = _install_get(engine)
+    engine.get_orientation_map_diagnostics = _install_diagnostics(engine)
     engine.ORIENTATION_MAP_SCHEMA = ORIENTATION_MAP_SCHEMA
     engine.ORIENTATION_MAP_MAX_TOPIC_ENTRIES = MAX_TOPIC_ENTRIES
     engine.ORIENTATION_MAP_MAX_RECENT_DIGESTS = MAX_RECENT_DIGESTS
+    engine.ORIENTATION_MAP_DEFAULT_MAX_BYTES = DEFAULT_MAX_BYTES
+    engine.ORIENTATION_MAP_MIN_MAX_BYTES = MIN_MAX_BYTES
+    engine.ORIENTATION_MAP_MAX_MAX_BYTES = MAX_MAX_BYTES
