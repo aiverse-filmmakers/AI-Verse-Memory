@@ -130,6 +130,12 @@ It does not copy atomic Memory text, current-source bodies, digest summaries, or
 
 The projection lives only in the derived SQLite database. Every public map read rebuilds from canonical atomic metadata, refreshed current-source index state, and the canonical session-digest projection so deletion/rebuild and source removal remain lossless.
 
+Schema v2 adds a deterministic `source_fingerprint` over the authorized source identities/versions used for that scope. Atomic-file changes, current-source version changes, or session-digest canonical-version changes alter the fingerprint; unrelated workspace evidence does not. Stored projection rows are never trusted as authority and are replaced from current owner evidence on read.
+
+Orientation output is hard-bounded by serialized UTF-8 bytes. Callers may supply `max_bytes`, or use `AI_VERSE_ORIENTATION_MAP_MAX_BYTES`; the default is 8192 bytes and the supported range is 1024-65536. Budget pressure removes only optional navigation detail in deterministic order while retaining scope, fingerprint, source counts, Memory-type counts, and source-kind counts. If even the core metadata cannot fit the configured budget, the call fails explicitly rather than silently violating the cap.
+
+`get_orientation_map_diagnostics` returns content-free operational facts only: projection bytes, a declared byte-based token estimate, budget, truncation flag, source counts, returned-entry counts, visible-scope count, fingerprint, and freshness. It does not expose chain-of-thought or canonical source text.
+
 ## Supersession
 
 Changed historical Memory preserves chronology. The replacement points to the old memory, the old memory becomes superseded, and a recovery journal protects the multi-file effect from interruption.
