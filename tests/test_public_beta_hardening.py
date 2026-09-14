@@ -144,6 +144,10 @@ class PublicBetaHardeningTests(unittest.TestCase):
             ids = {row["id"] for row in rows}
             self.assertTrue({item[0] for item in results}.issubset(ids))
 
+    def test_default_mutation_wait_allows_cross_platform_serialized_rebuilds(self):
+        self.assertGreaterEqual(mem._public_beta.LOCK_WAIT_SECONDS, 30)
+        self.assertLess(mem._public_beta.LOCK_WAIT_SECONDS, mem._public_beta.LOCK_STALE_SECONDS)
+
     def test_mutation_wait_timeout_tracks_queue_progress_not_total_queue_age(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._native_root(Path(tmp))
