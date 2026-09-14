@@ -181,9 +181,13 @@ class PublicBetaHardeningTests(unittest.TestCase):
             ids = {row["id"] for row in rows}
             self.assertTrue({item[0] for item in results}.issubset(ids))
 
-    def test_default_mutation_wait_allows_cross_platform_serialized_rebuilds(self):
-        self.assertGreaterEqual(mem._public_beta.LOCK_WAIT_SECONDS, 30)
+    def test_default_mutation_wait_allows_cross_platform_serialized_writers(self):
+        self.assertGreaterEqual(mem._public_beta.LOCK_WAIT_SECONDS, 120)
         self.assertLess(mem._public_beta.LOCK_WAIT_SECONDS, mem._public_beta.LOCK_STALE_SECONDS)
+        self.assertGreater(
+            mem._public_beta.LOCK_WAIT_SECONDS,
+            mem._public_beta.LOCK_DEAD_PROCESS_GRACE_SECONDS,
+        )
 
     def test_mutation_wait_timeout_tracks_queue_progress_not_total_queue_age(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -206,6 +210,42 @@ class PublicBetaHardeningTests(unittest.TestCase):
                 mem._public_beta.LOCK_WAIT_SECONDS = original_wait
 
             self.assertEqual(sorted(results), [0, 1, 2])
+
+    def test_dead_mutation_owner_recovers_after_short_grace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            state = root / "operator" / "memory" / ".ai-verse-memory-state"
+            state.mkdir(parents=True)
+            lock = state / "mutation.lock"
+            lock.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "pid": 999999999,
+                        "holder": "dead-owner-test",
+                        "created_at": "2026-09-14T00:00:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            age = time.time() - (mem._public_beta.LOCK_DEAD_PROCESS_GRACE_SECONDS + 1)
+            os.utime(lock, (age, age))
+
+            started = time.monotonic()
+            mem_id, _, created = mem.write_atomic(
+                "dead owner short grace recovery",
+                "fact",
+                "operator",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            elapsed = time.monotonic() - started
+
+            self.assertTrue(created)
+            self.assertTrue(mem_id.startswith("mem-"))
+            self.assertFalse(lock.exists())
+            self.assertLess(elapsed, 10.0)
 
     def test_stale_mutation_lock_is_recovered(self):
         with tempfile.TemporaryDirectory() as tmp:
