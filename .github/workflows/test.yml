@@ -26,6 +26,7 @@ jobs:
           python -m py_compile scripts/session_digest.py
           python -m py_compile scripts/session_digest_index.py
           python -m py_compile scripts/session_promotion.py
+          python -m py_compile scripts/orientation_map.py
           python -m py_compile scripts/component.py
           python -m py_compile scripts/install.py
           python -m py_compile scripts/install_engine.py
