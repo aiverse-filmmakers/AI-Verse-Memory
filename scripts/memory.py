@@ -291,12 +291,19 @@ def capture_candidate(
             effect_id=effect_id,
             evidence_refs=refs,
         )
+    if mem_type == "correction":
+        written_meta, _ = _engine.parse_markdown(path)
+        result_scope = _engine.normalize_scope(
+            written_meta.get("scope"), resolved_root, resolved_mode
+        )
+    else:
+        result_scope = _engine.normalize_scope(scope, resolved_root, resolved_mode)
     return {
         "state": "captured" if created else "existing",
         "changed": bool(created),
         "memory_id": mem_id,
         "type": mem_type,
-        "scope": _engine.normalize_scope(scope, resolved_root, resolved_mode),
+        "scope": result_scope,
         "path": _engine.relpath(path, resolved_root) if resolved_mode == _engine.MODE_NATIVE else str(path),
         "source": source,
         "evidence_refs": refs,
