@@ -146,6 +146,16 @@ The API version is `memory.progressive-recall.v1`. Summary/detail require a non-
 
 Summary/detail output is navigation or bounded indexed detail, not exact-source evidence. Evidence pointers carry canonical/derived path and version metadata for source descent. Exact-source responses return `status="ok"` only for currently validated Memory-owned canonical text. A changed pointer returns `stale`; a deleted/unsafe source returns `unavailable`. Session digests return `external_source_required` with validated Gateway source refs instead of treating the digest summary as original transcript evidence.
 
+### Derived relationship projection
+
+Memory can build a disposable relationship projection with `rebuild_relationship_projection`, refresh it with `refresh_relationship_projection`, and inspect bounded scoped edges with `list_relationships`.
+
+D1 relationships come only from explicit canonical metadata/provenance: atomic `supersedes` / `superseded_by`, atomic `evidence_refs` and digest bindings, session-digest `source_refs` / `source_coverage`, and explicit session identity. The projection copies no Memory body or digest summary text and creates no new fact authority.
+
+The SQLite `memory_relationships` table is derived state. Deleting it is safe; the next rebuild recreates it from canonical atomics and validated session digests. Public relationship reads refresh before returning results, so removed or changed canonical metadata drops stale edges. Workspace visibility follows established Memory scope rules.
+
+D1 does **not** traverse neighbors or expand recall through the graph. D2 owns the benchmarked ship/reject decision for that behavior.
+
 ## Update, disable, enable, uninstall
 
 Update without changing enablement or authority:
