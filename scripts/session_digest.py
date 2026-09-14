@@ -626,3 +626,18 @@ def apply(engine) -> None:
             sys.modules[module_name] = progressive
             spec.loader.exec_module(progressive)
         progressive.apply(engine)
+
+    relationships_path = Path(__file__).resolve().parent / "relationship_projection.py"
+    if relationships_path.exists():
+        module_name = "_aiverse_memory_relationship_projection"
+        relationships = sys.modules.get(module_name)
+        if relationships is None:
+            spec = importlib.util.spec_from_file_location(module_name, relationships_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(
+                    f"Could not load relationship projection extension: {relationships_path}"
+                )
+            relationships = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = relationships
+            spec.loader.exec_module(relationships)
+        relationships.apply(engine)
