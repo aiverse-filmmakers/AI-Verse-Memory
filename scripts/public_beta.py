@@ -10,10 +10,12 @@ snapshot-bound legacy adoption.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -981,6 +983,16 @@ def apply(engine) -> None:
     engine.public_beta_mutation_lock = lambda root, mode: _mutation_lock(engine, Path(root), mode)
     engine.public_beta_atomic_write_json = _atomic_write_json
     engine.public_beta_atomic_write_text = _atomic_write_text
+    engine.public_beta_payload_digest = _payload_digest
+    engine.public_beta_effect_path = lambda root, mode, effect_id: _effect_path(engine, Path(root), mode, effect_id)
+    engine.public_beta_load_effect = lambda root, mode, effect_id, digest: _load_effect(
+        engine, Path(root), mode, effect_id, digest
+    )
+    engine.public_beta_safe_child_dir = _safe_child_dir
+    engine.public_beta_native_memory_base = lambda root, scope: _native_atomic_base(
+        engine, Path(root), scope
+    ).parent
+    engine.public_beta_standalone_home = lambda root: _standalone_home(engine, Path(root))
     engine.public_beta_authority_file = lambda root, mode: _authority_file(engine, Path(root), mode)
     engine.public_beta_assert_writable_authority = lambda root, mode: _assert_writable_authority(engine, Path(root), mode)
     engine.public_beta_component_state_path = lambda root, mode: component_state_path(engine, Path(root), mode)
@@ -988,3 +1000,19 @@ def apply(engine) -> None:
     engine.public_beta_write_component_state = lambda root, mode, **changes: write_component_state(
         engine, Path(root), mode, **changes
     )
+
+    # Session digests are an additive Memory-owned extension. Load them here,
+    # after hardening helpers are attached, so the compatibility entrypoint can
+    # evolve independently and concurrent runtime work does not need to edit it.
+    digest_path = Path(__file__).resolve().parent / "session_digest.py"
+    if digest_path.exists():
+        module_name = "_aiverse_memory_session_digest"
+        module = sys.modules.get(module_name)
+        if module is None:
+            spec = importlib.util.spec_from_file_location(module_name, digest_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Could not load session digest extension: {digest_path}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+        module.apply(engine)
