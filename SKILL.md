@@ -107,7 +107,9 @@ Use `progressive_recall` when the caller wants a bounded retrieval layer instead
 - Start at `catalog` when orientation is enough.
 - Use `summary` for relevant session-level navigation and compact indexed-record excerpts.
 - Use `detail` only when the caller needs the bounded indexed content and evidence pointers.
-- Treat `next_depth="source"` as a signal that exact authoritative evidence exists below the current layer. C1 does not read that source yet; C2 owns that extension.
+- Follow `next_depth="source"` only when exact evidence is needed. Pass the complete prior detail item as `evidence_ref`; do not manufacture or widen its path/scope/version metadata.
+- Accept exact text only when source depth returns `status="ok"` and `exact_evidence=true`. `stale` or `unavailable` means do not guess from detail text.
+- A session digest may return `external_source_required`; route those validated Gateway refs through the later owner bridge rather than treating the digest summary as transcript evidence.
 
 Do not treat summary excerpts or digest summaries as exact evidence. Preserve the returned scope and evidence metadata when requesting deeper retrieval.
 
