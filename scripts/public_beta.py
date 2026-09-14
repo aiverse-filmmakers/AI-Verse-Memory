@@ -367,22 +367,33 @@ def _load_effect(engine, root: Path, mode: str, effect_id: str, digest: str):
     return payload
 
 
-def _record_effect(engine, root: Path, mode: str, effect_id: str, digest: str, mem_id: str, path: Path) -> None:
+def _record_effect(
+    engine,
+    root: Path,
+    mode: str,
+    effect_id: str,
+    digest: str,
+    mem_id: str,
+    path: Path,
+    *,
+    operation: str = "remember",
+    extra: Optional[dict] = None,
+) -> None:
     if not effect_id:
         return
     receipt = _effect_path(engine, root, mode, effect_id)
-    _atomic_write_json(
-        receipt,
-        {
-            "schema_version": PUBLIC_BETA_SCHEMA,
-            "effect_id": effect_id,
-            "operation": "remember",
-            "input_digest": digest,
-            "memory_id": mem_id,
-            "path": engine.relpath(path, root) if mode == engine.MODE_NATIVE else str(path),
-            "completed_at": _now_iso(),
-        },
-    )
+    payload = {
+        "schema_version": PUBLIC_BETA_SCHEMA,
+        "effect_id": effect_id,
+        "operation": operation,
+        "input_digest": digest,
+        "memory_id": mem_id,
+        "path": engine.relpath(path, root) if mode == engine.MODE_NATIVE else str(path),
+        "completed_at": _now_iso(),
+    }
+    if extra:
+        payload.update(extra)
+    _atomic_write_json(receipt, payload)
 
 
 def _authority_file(engine, root: Path, mode: str) -> Path:
@@ -498,6 +509,253 @@ def _patched_write_atomic(engine, original_rebuild):
             return mem_id, path, True
 
     return write_atomic
+
+
+
+def _patched_supersede_atomic(engine, original_rebuild):
+    def supersede_atomic(
+        supersedes: str,
+        text: str,
+        *,
+        mem_type: str = "correction",
+        scope: Optional[str] = None,
+        workspace: Optional[str] = None,
+        importance: Optional[int] = None,
+        confidence: Optional[float] = None,
+        source: str = "",
+        why: str = "",
+        tags: str = "",
+        valid_from: str = "",
+        root: Optional[Path] = None,
+        mode: Optional[str] = None,
+        effect_id: str = "",
+        evidence_refs: Optional[Sequence[str]] = None,
+    ) -> Tuple[str, Path, bool]:
+        """Atomically replace one historical Memory record with retry-safe evidence."""
+
+        if not isinstance(supersedes, str) or not supersedes.strip():
+            raise ValueError("supersedes must identify an existing Memory record")
+        supersedes = supersedes.strip()
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Correction text cannot be empty")
+        text = text.strip()
+        if mem_type not in engine.MEMORY_TYPES:
+            raise ValueError(f"Unsupported memory type: {mem_type}")
+        if not isinstance(effect_id, str) or not effect_id.strip():
+            raise ValueError("Retry-safe supersession requires an effect_id")
+        effect_id = effect_id.strip()
+
+        refs = []
+        for raw in evidence_refs or []:
+            value = str(raw).strip()
+            if value and value not in refs:
+                refs.append(value)
+
+        root = Path(root or engine.repository_root()).resolve()
+        mode = mode or engine.detect_mode(root)
+
+        with _mutation_lock(engine, root, mode):
+            _assert_writable_authority(engine, root, mode)
+            old_path = engine.locate_memory(supersedes, root, mode)
+            if not old_path:
+                raise ValueError(f"Superseded Memory record not found: {supersedes}")
+            if mode == engine.MODE_NATIVE:
+                engine._native_source_identity(old_path, root, expected_kind="memory")
+            else:
+                _assert_path_within(old_path, _standalone_atomic_base(engine, root))
+
+            old_meta, old_body = engine.parse_markdown(old_path)
+            old_scope = engine.normalize_scope(
+                old_meta.get("scope") or engine.infer_scope_from_path(old_path, root, mode),
+                root,
+                mode,
+            )
+            requested_scope = scope
+            if workspace is not None:
+                if not isinstance(workspace, str) or not workspace.strip():
+                    raise ValueError("workspace must be a non-empty string")
+                workspace_scope = f"workspace:{workspace.strip()}"
+                if requested_scope not in (None, "", workspace_scope):
+                    raise ValueError("scope conflicts with workspace")
+                requested_scope = workspace_scope
+            normalized_scope = engine.normalize_scope(requested_scope or old_scope, root, mode)
+            if normalized_scope != old_scope:
+                raise ValueError("Correction cannot supersede Memory across scope boundaries")
+
+            resolved_importance = (
+                int(importance)
+                if importance is not None
+                else int(old_meta.get("importance", "3") or 3)
+            )
+            resolved_confidence = (
+                float(confidence)
+                if confidence is not None
+                else float(old_meta.get("confidence", "1") or 1)
+            )
+            resolved_tags = tags or old_meta.get("tags", "")
+            new_id = engine.memory_id(text, normalized_scope)
+            if new_id == supersedes:
+                raise ValueError("Correction must change the historical Memory content")
+
+            effect_payload = {
+                "operation": "supersede",
+                "supersedes": supersedes,
+                "text": text,
+                "type": mem_type,
+                "scope": normalized_scope,
+                "importance": resolved_importance,
+                "confidence": resolved_confidence,
+                "source": source,
+                "why": why,
+                "tags": resolved_tags,
+                "valid_from": valid_from,
+                "evidence_refs": refs,
+            }
+            effect_digest = _payload_digest(effect_payload)
+            existing_effect = _load_effect(engine, root, mode, effect_id, effect_digest)
+            if existing_effect:
+                if existing_effect.get("operation") != "supersede":
+                    raise RuntimeError(
+                        f"Idempotency key {effect_id!r} belongs to a different Memory operation"
+                    )
+                if existing_effect.get("superseded_id") != supersedes:
+                    raise RuntimeError("Memory supersession effect target mismatch")
+                existing_id = str(existing_effect.get("memory_id") or "")
+                existing_path = engine.locate_memory(existing_id, root, mode)
+                if not existing_path:
+                    raise RuntimeError(
+                        f"Idempotent Memory supersession {effect_id!r} points to missing canonical memory"
+                    )
+                refreshed_old, _ = engine.parse_markdown(old_path)
+                if (
+                    refreshed_old.get("status") != "superseded"
+                    or refreshed_old.get("superseded_by") != existing_id
+                ):
+                    raise RuntimeError("Memory supersession effect is not reflected in canonical history")
+                return existing_id, existing_path, False
+
+            existing_new_path = engine.locate_memory(new_id, root, mode)
+
+            # Recover a completed two-file mutation whose receipt was lost after
+            # the canonical writes but before receipt persistence. locate_memory
+            # avoids assuming the recovery happens on the same calendar date.
+            if (
+                old_meta.get("status") == "superseded"
+                and old_meta.get("superseded_by") == new_id
+                and existing_new_path is not None
+            ):
+                new_path = existing_new_path
+                new_meta, new_body = engine.parse_markdown(new_path)
+                stored_refs = []
+                if new_meta.get("evidence_refs"):
+                    try:
+                        stored_refs = json.loads(new_meta["evidence_refs"])
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError("Recovered correction has invalid evidence_refs") from exc
+                if (
+                    new_meta.get("supersedes") == supersedes
+                    and new_meta.get("scope") == normalized_scope
+                    and new_meta.get("type") == mem_type
+                    and text in new_body
+                    and list(stored_refs) == refs
+                ):
+                    _record_effect(
+                        engine,
+                        root,
+                        mode,
+                        effect_id,
+                        effect_digest,
+                        new_id,
+                        new_path,
+                        operation="supersede",
+                        extra={"superseded_id": supersedes},
+                    )
+                    return new_id, new_path, False
+
+            if old_meta.get("status", "active") != "active":
+                raise RuntimeError(
+                    f"Memory record {supersedes} is not active and cannot be superseded again"
+                )
+            if existing_new_path is not None:
+                raise RuntimeError(
+                    f"Correction destination already exists without matching supersession evidence: {new_id}"
+                )
+
+            created = engine.now_iso()
+            new_path = _safe_atomic_path(engine, new_id, created, normalized_scope, root, mode)
+            new_meta = {
+                "id": new_id,
+                "type": "state" if mem_type == "project_state" and mode == engine.MODE_NATIVE else mem_type,
+                "scope": normalized_scope,
+                "status": "active",
+                "importance": str(max(1, min(5, resolved_importance))),
+                "confidence": f"{max(0.0, min(1.0, resolved_confidence)):.2f}",
+                "created_at": created,
+                "updated_at": created,
+                "valid_from": valid_from,
+                "valid_to": "",
+                "supersedes": supersedes,
+                "superseded_by": "",
+                "source": source,
+                "tags": resolved_tags,
+            }
+            if refs:
+                new_meta["evidence_refs"] = json.dumps(refs, separators=(",", ":"))
+            new_body = f"# Memory\n\n{text}\n"
+            if why.strip():
+                new_body += f"\n# Why it matters\n\n{why.strip()}\n"
+            new_content = engine.render_frontmatter(new_meta) + "\n\n" + new_body
+
+            replaced_meta = dict(old_meta)
+            replaced_meta.update(
+                {
+                    "status": "superseded",
+                    "valid_to": created,
+                    "superseded_by": new_id,
+                    "updated_at": created,
+                }
+            )
+            replaced_content = (
+                engine.render_frontmatter(replaced_meta)
+                + "\n\n"
+                + old_body.strip()
+                + "\n"
+            )
+
+            tx_id = (
+                "supersede-"
+                + hashlib.sha256(
+                    (supersedes + "\n" + new_id + "\n" + effect_id).encode("utf-8")
+                ).hexdigest()[:24]
+            )
+            journal = _write_transaction(
+                engine,
+                root,
+                mode,
+                tx_id,
+                [(new_path, new_content), (old_path, replaced_content)],
+            )
+            _atomic_write_text(new_path, new_content)
+            _atomic_write_text(old_path, replaced_content)
+            original_rebuild(silent=True, root=root, mode=mode)
+            _record_effect(
+                engine,
+                root,
+                mode,
+                effect_id,
+                effect_digest,
+                new_id,
+                new_path,
+                operation="supersede",
+                extra={"superseded_id": supersedes},
+            )
+            try:
+                journal.unlink()
+            except FileNotFoundError:
+                pass
+            return new_id, new_path, True
+
+    return supersede_atomic
 
 
 def _root_and_mode_for_memory_path(engine, path: Path) -> Tuple[Path, str]:
@@ -973,6 +1231,7 @@ def apply(engine) -> None:
     )
     engine.rebuild = _patched_rebuild(engine, original_rebuild)
     engine.write_atomic = _patched_write_atomic(engine, original_rebuild)
+    engine.supersede_atomic = _patched_supersede_atomic(engine, original_rebuild)
     engine.update_meta = _patched_update_meta(engine)
     engine.forget_memory = _patched_forget(engine, original_rebuild)
     engine.supersede = _patched_supersede(engine, original_rebuild)

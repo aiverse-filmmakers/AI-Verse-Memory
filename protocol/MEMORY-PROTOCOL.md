@@ -95,6 +95,24 @@ Automatic capture is limited to historical `fact`, `preference`, `entity`, `even
 
 The admission gate is a thin wrapper over the existing canonical `write_atomic` mutation. It creates no second Memory store or writer.
 
+## Selective session-digest promotion
+
+A completed session digest may provide evidence for a small number of durable atomic Memory records through `promote_session_digest`.
+
+Promotion is deliberately not a classifier or another Memory authority:
+
+- the caller still supplies explicit admission assertions;
+- at most 8 candidates may be evaluated from one digest call;
+- every candidate is forced to the digest's exact scope;
+- caller-supplied evidence references must already exist in the digest's `source_refs` or `source_coverage`;
+- the canonical digest reference is added as promotion evidence;
+- retry-safe effect identity is derived deterministically when the caller does not supply one;
+- each candidate still passes through `capture_candidate`, so transient, weak-confidence, secret, strategic, current-truth, permission-expanding, privacy-ambiguous, or external-authority material remains blocked/ignored.
+
+A correction must name the exact historical Memory record it supersedes. Memory performs the replacement as one serialized two-file transaction, preserves the old record as superseded history, retains evidence refs, and records the retry-safe effect receipt. Cross-scope supersession is rejected.
+
+Session digests remain evidence/navigation. Promotion never turns the whole digest or transcript into atomic Memory automatically.
+
 ## Supersession
 
 Changed historical Memory preserves chronology. The replacement points to the old memory, the old memory becomes superseded, and a recovery journal protects the multi-file effect from interruption.

@@ -117,6 +117,12 @@ The gate fails closed unless the caller explicitly proves the candidate is durab
 
 This path reuses the existing canonical Memory writer. It does not persist every turn, duplicate current profile/context truth, or create another Memory store.
 
+### Selective promotion from session digests
+
+Session digests can be used as bounded evidence for durable atomic Memory through the module API `promote_session_digest`. The caller supplies explicit candidates and safety assertions; Memory does not infer a durable fact merely because it appeared in a conversation.
+
+Promotion is capped per digest, locked to the digest's scope, and accepts only evidence references covered by that digest. Safe candidates still route through `capture_candidate`. Explicit corrections must identify the older Memory record they supersede; Memory then performs a retry-safe transactional supersession so normal recall sees the correction while historical recall preserves the stale record.
+
 ## Update, disable, enable, uninstall
 
 Update without changing enablement or authority:

@@ -615,5 +615,315 @@ class SessionDigestIndexTests(unittest.TestCase):
                 os.environ.pop("AI_VERSE_MEMORY_HOME", None)
 
 
+class SessionDigestPromotionTests(unittest.TestCase):
+    def _native_root(self, base: Path) -> Path:
+        root = base / "os"
+        root.mkdir()
+        (root / "AI-VERSE.yaml").write_text(
+            'schema_version: "2.0"\narchitecture: unified-workspace\n',
+            encoding="utf-8",
+        )
+        (root / "operator").mkdir()
+        for workspace in ("alpha", "beta"):
+            owner = root / "workspaces" / workspace
+            owner.mkdir(parents=True)
+            (owner / "WORKSPACE.yaml").write_text(
+                f"id: {workspace}\nname: {workspace.title()}\ntype: test\nstatus: active\npurpose: promotion tests\n",
+                encoding="utf-8",
+            )
+        return root
+
+    def _digest(self, root: Path, *, session_id: str = "sess-promote"):
+        run_id = f"run-{session_id}"
+        return mem.write_session_digest(
+            session_id,
+            "The completed session contains bounded historical evidence for later selective promotion.",
+            run_id=run_id,
+            scope="workspace:alpha",
+            topic="Selective promotion evidence",
+            significant_outcomes=["Validated a durable review workflow"],
+            unresolved_items=["No automatic current-state capture"],
+            source_refs=[f"gateway:session:{session_id}", f"gateway:run:{run_id}"],
+            source_coverage=[f"gateway:session:{session_id}:messages:1-12"],
+            source_fingerprint=f"sha256:{session_id}",
+            source_version="gateway-run-v1",
+            provenance={"owner": "ai-verse-gateway", "kind": "completed_session"},
+            completed_at="2026-09-14T12:00:00+00:00",
+            effect_id=f"digest:{session_id}",
+            root=root,
+            mode=mem.MODE_NATIVE,
+        )
+
+    def _admission(self, **overrides):
+        admission = {
+            "durable": True,
+            "historical": True,
+            "current_truth": False,
+            "contains_secret": False,
+            "strategic": False,
+            "permission_expansion": False,
+            "privacy_ambiguous": False,
+            "external_authority": False,
+        }
+        admission.update(overrides)
+        return admission
+
+    def test_promotes_only_durable_candidates_and_replay_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            digest_id, _, _ = self._digest(root)
+            candidates = [
+                {
+                    "text": "Client Alpha reviews are more reliable with concise checkpoint notes.",
+                    "type": "lesson",
+                    "importance": 4,
+                    "confidence": 0.95,
+                    "why": "This repeated review pattern has future value.",
+                    "tags": "review,workflow",
+                    "evidence_refs": ["gateway:session:sess-promote"],
+                    "admission": self._admission(),
+                },
+                {
+                    "text": "A temporary conversational aside should not become durable Memory.",
+                    "type": "fact",
+                    "confidence": 0.99,
+                    "admission": self._admission(durable=False),
+                },
+            ]
+
+            first = mem.promote_session_digest(
+                digest_id,
+                candidates,
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual(first["attempted"], 2)
+            self.assertEqual(first["captured"], 1)
+            self.assertEqual(first["ignored"], 1)
+            self.assertEqual(first["blocked"], 0)
+
+            promoted = [
+                row
+                for row in mem.recall(
+                    "concise checkpoint notes",
+                    workspace="alpha",
+                    root=root,
+                    mode=mem.MODE_NATIVE,
+                )
+                if row["kind"] == "memory"
+            ]
+            self.assertEqual(len(promoted), 1)
+
+            replay = mem.promote_session_digest(
+                digest_id,
+                candidates,
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual(replay["captured"], 0)
+            self.assertEqual(replay["existing"], 1)
+            self.assertEqual(replay["ignored"], 1)
+            self.assertEqual(
+                replay["results"][0]["memory_id"],
+                first["results"][0]["memory_id"],
+            )
+
+    def test_invalid_evidence_fails_before_any_candidate_is_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            digest_id, _, _ = self._digest(root, session_id="sess-evidence")
+            candidates = [
+                {
+                    "text": "Valid promotion should not partially write before validation finishes.",
+                    "type": "lesson",
+                    "confidence": 0.95,
+                    "evidence_refs": ["gateway:session:sess-evidence"],
+                    "admission": self._admission(),
+                },
+                {
+                    "text": "This candidate cites evidence outside the digest.",
+                    "type": "fact",
+                    "confidence": 0.95,
+                    "evidence_refs": ["gateway:session:not-covered"],
+                    "admission": self._admission(),
+                },
+            ]
+            with self.assertRaisesRegex(ValueError, "not covered by the session digest"):
+                mem.promote_session_digest(
+                    digest_id,
+                    candidates,
+                    workspace="alpha",
+                    root=root,
+                    mode=mem.MODE_NATIVE,
+                )
+
+            rows = mem.recall(
+                "partially write",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertFalse(any(row["kind"] == "memory" for row in rows))
+
+    def test_promotion_is_bounded_per_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            digest_id, _, _ = self._digest(root, session_id="sess-bounded")
+            candidates = [
+                {
+                    "text": f"Durable bounded lesson {index}",
+                    "type": "lesson",
+                    "confidence": 0.95,
+                    "admission": self._admission(),
+                }
+                for index in range(mem.MAX_PROMOTIONS_PER_DIGEST + 1)
+            ]
+            with self.assertRaisesRegex(ValueError, "at most"):
+                mem.promote_session_digest(
+                    digest_id,
+                    candidates,
+                    workspace="alpha",
+                    root=root,
+                    mode=mem.MODE_NATIVE,
+                )
+
+    def test_explicit_correction_supersedes_stale_history_with_effect_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            old_id, old_path, _ = mem.write_atomic(
+                "Client Alpha prefers daily CSV exports.",
+                "fact",
+                "workspace:alpha",
+                source="historical-run",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            digest_id, _, _ = self._digest(root, session_id="sess-correction")
+            candidate = {
+                "text": "Client Alpha prefers weekly JSON exports.",
+                "type": "correction",
+                "supersedes": old_id,
+                "importance": 5,
+                "confidence": 0.99,
+                "why": "The later completed session explicitly corrected the older preference.",
+                "evidence_refs": ["gateway:session:sess-correction"],
+                "admission": self._admission(),
+            }
+
+            first = mem.promote_session_digest(
+                digest_id,
+                [candidate],
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual(first["captured"], 1)
+            correction_id = first["results"][0]["memory_id"]
+
+            old_meta, _ = mem.parse_markdown(old_path)
+            self.assertEqual(old_meta["status"], "superseded")
+            self.assertEqual(old_meta["superseded_by"], correction_id)
+
+            correction_path = mem.locate_memory(
+                correction_id, root=root, mode=mem.MODE_NATIVE
+            )
+            self.assertIsNotNone(correction_path)
+            new_meta, _ = mem.parse_markdown(correction_path)
+            self.assertEqual(new_meta["type"], "correction")
+            self.assertEqual(new_meta["supersedes"], old_id)
+            self.assertEqual(new_meta["scope"], "workspace:alpha")
+            self.assertIn(
+                f"memory:session-digest:{digest_id}",
+                json.loads(new_meta["evidence_refs"]),
+            )
+
+            current = mem.recall(
+                "exports",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            current_ids = {row["id"] for row in current}
+            self.assertIn(correction_id, current_ids)
+            self.assertNotIn(old_id, current_ids)
+
+            history = mem.recall(
+                "exports",
+                workspace="alpha",
+                include_history=True,
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            history_ids = {row["id"] for row in history}
+            self.assertIn(correction_id, history_ids)
+            self.assertIn(old_id, history_ids)
+
+            replay = mem.promote_session_digest(
+                digest_id,
+                [candidate],
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual(replay["existing"], 1)
+            self.assertEqual(replay["results"][0]["memory_id"], correction_id)
+
+    def test_correction_cannot_supersede_another_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            beta_id, _, _ = mem.write_atomic(
+                "Beta private historical fact.",
+                "fact",
+                "workspace:beta",
+                source="beta-run",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            digest_id, _, _ = self._digest(root, session_id="sess-cross-scope")
+            candidate = {
+                "text": "Attempted cross-scope correction.",
+                "type": "correction",
+                "supersedes": beta_id,
+                "confidence": 0.99,
+                "evidence_refs": ["gateway:session:sess-cross-scope"],
+                "admission": self._admission(),
+            }
+            with self.assertRaisesRegex(ValueError, "across scope boundaries"):
+                mem.promote_session_digest(
+                    digest_id,
+                    [candidate],
+                    workspace="alpha",
+                    root=root,
+                    mode=mem.MODE_NATIVE,
+                )
+
+            beta_meta, _ = mem.parse_markdown(
+                mem.locate_memory(beta_id, root=root, mode=mem.MODE_NATIVE)
+            )
+            self.assertEqual(beta_meta["status"], "active")
+
+    def test_automatic_correction_without_target_is_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            result = mem.capture_candidate(
+                {
+                    "text": "Unbound correction must not become active history.",
+                    "type": "correction",
+                    "workspace": "alpha",
+                    "confidence": 0.99,
+                    "source": "unit-test",
+                    "effect_id": "unbound-correction",
+                    "evidence_refs": ["unit:test"],
+                    "admission": self._admission(),
+                },
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual(result["state"], "blocked")
+            self.assertFalse(result["changed"])
+
+
 if __name__ == "__main__":
     unittest.main()
