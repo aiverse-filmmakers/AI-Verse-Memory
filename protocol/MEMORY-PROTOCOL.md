@@ -157,6 +157,23 @@ At source depth, indexed atomic/current-owner records are read only from the cur
 
 Session digests are deliberately different: the canonical digest file is itself a compact summary. After validating its canonical version and scope, source depth returns `external_source_required` plus bounded Gateway `source_refs` / coverage. It never upgrades the digest summary into original transcript evidence.
 
+## Deterministic relationship projection
+
+D1 adds one rebuildable SQLite projection, `memory_relationships`, over existing canonical Memory metadata and validated session digests.
+
+Allowed edge production is explicit and deterministic:
+
+- atomic `supersedes` and `superseded_by` create same-scope canonical atomic edges only when both current canonical endpoints exist;
+- atomic `evidence_refs` and the known session-digest source binding create `derived_from` edges;
+- digest `source_refs` and `source_coverage` create `derived_from` edges to external evidence references;
+- digest `session_id` creates one `same_session` edge to the stable Gateway session identity, avoiding pairwise O(n²) digest links.
+
+No edge is inferred from text similarity, tags, embeddings, model output, or speculative shared entities. Dangling/malformed canonical references create no relationship authority.
+
+Each projected row stores deterministic edge identity, relation type, source/target kind and identifier, source scope/path/version, validated canonical target metadata where applicable, and compact explicit evidence/provenance metadata. It does not copy atomic Memory text or digest summary content.
+
+The projection is removable and rebuildable. Scoped reads refresh it from canonical sources first, enforce normal operator/workspace visibility, and remove stale edges when canonical metadata or endpoints change. D1 provides no graph traversal or recall expansion; D2 separately benchmarks whether bounded neighbor retrieval earns its complexity.
+
 ## Supersession
 
 Changed historical Memory preserves chronology. The replacement points to the old memory, the old memory becomes superseded, and a recovery journal protects the multi-file effect from interruption.
