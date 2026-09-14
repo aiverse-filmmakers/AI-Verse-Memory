@@ -80,6 +80,14 @@ Memory may record:
 
 Memory must not create executable Skill packages or decide strategic promotion. Skills owns Skill lifecycle. Brain owns strategy/evaluation.
 
+## Automatic safe historical capture
+
+For owner-routed runtime capture, call the Memory module's `capture_candidate` admission gate rather than writing Markdown directly.
+
+The caller must explicitly prove durability/history and explicitly deny current-truth, secret, strategic, privacy-ambiguity, permission-expansion and external-authority boundaries. Memory then reuses canonical `write_atomic` with source, evidence refs and `effect_id`.
+
+Do not use automatic capture for current state, constraints, decisions, credentials, strategic direction or uncertain/private material.
+
 ## Supersession
 
 When historical meaning changes, supersede the old atomic record instead of rewriting chronology.
