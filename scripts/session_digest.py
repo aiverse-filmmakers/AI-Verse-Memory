@@ -140,12 +140,16 @@ def _normalized_payload(
 ) -> Dict[str, Any]:
     normalized_scope = engine.normalize_scope(scope, root, mode)
     refs = _bounded_list("source_refs", source_refs, max_items=MAX_REFS, max_chars=MAX_REF_CHARS)
+    if not refs:
+        raise ValueError("source_refs must contain at least one authoritative source reference")
     coverage = _bounded_list(
         "source_coverage",
         source_coverage if source_coverage is not None else refs,
         max_items=MAX_REFS,
         max_chars=MAX_REF_CHARS,
     )
+    if not coverage:
+        raise ValueError("source_coverage must contain at least one covered source reference")
     return {
         "schema_version": SESSION_DIGEST_SCHEMA,
         "session_id": _required_identifier("session_id", session_id),
