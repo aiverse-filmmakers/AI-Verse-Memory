@@ -145,7 +145,7 @@ The depth ladder is owner-preserving:
 1. `catalog` reuses the rebuildable B2 orientation projection.
 2. `summary` combines existing targeted session-digest recall with compact excerpts from existing query-bound indexed recall.
 3. `detail` returns bounded targeted digest/index detail and evidence pointers.
-4. `source` is the next exact-evidence depth but is reserved until C2 implements source containment/freshness revalidation.
+4. `source` accepts a prior detail item as `evidence_ref` and revalidates exact source scope, containment, identity, and version before returning canonical text.
 
 Legacy `recall()` is unchanged. Progressive recall calls existing `recall()`, `recall_session_digests()`, and `get_orientation_map()` rather than introducing a second ranking/index authority.
 
