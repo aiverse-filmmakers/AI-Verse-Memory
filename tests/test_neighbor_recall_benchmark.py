@@ -16,6 +16,7 @@ SPEC.loader.exec_module(bench)
 class NeighborRecallBenchmarkTests(unittest.TestCase):
     def test_d2_rejects_unearned_runtime_neighbor_expansion(self):
         result = bench.run_benchmark()
+        print("D2_BENCHMARK_JSON=" + json.dumps(result, sort_keys=True))
 
         self.assertEqual(result["decision"], "reject")
         self.assertEqual(result["baseline"]["correct_scenarios"], 3)
