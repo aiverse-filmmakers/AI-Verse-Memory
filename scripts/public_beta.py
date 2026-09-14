@@ -244,6 +244,35 @@ def _lock_is_stale(lock: Path) -> bool:
     return not _pid_alive(pid)
 
 
+def _lock_progress_token(lock: Path):
+    """Return a best-effort identity for the current lock holder.
+
+    The canonical mutation timeout is a *no progress* timeout, not a cap on the
+    total duration of a healthy serialized queue. A new lock file/holder resets
+    the wait budget while one stuck holder still times out normally.
+    """
+
+    try:
+        stat = lock.stat()
+    except OSError:
+        return None
+
+    holder = ""
+    try:
+        payload = json.loads(lock.read_text(encoding="utf-8"))
+        holder = str(payload.get("holder") or "")
+    except Exception:
+        pass
+
+    return (
+        int(getattr(stat, "st_ino", 0) or 0),
+        int(getattr(stat, "st_mtime_ns", 0) or 0),
+        int(getattr(stat, "st_ctime_ns", 0) or 0),
+        int(stat.st_size),
+        holder,
+    )
+
+
 @contextmanager
 def _mutation_lock(engine, root: Path, mode: str):
     state = _state_dir(engine, root, mode)
@@ -259,6 +288,7 @@ def _mutation_lock(engine, root: Path, mode: str):
         return
 
     deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    observed_holder = None
     while True:
         try:
             fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -269,7 +299,15 @@ def _mutation_lock(engine, root: Path, mode: str):
                     lock.unlink()
                 except FileNotFoundError:
                     pass
+                observed_holder = None
+                deadline = time.monotonic() + LOCK_WAIT_SECONDS
                 continue
+
+            progress = _lock_progress_token(lock)
+            if progress is not None and progress != observed_holder:
+                observed_holder = progress
+                deadline = time.monotonic() + LOCK_WAIT_SECONDS
+
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"Timed out waiting for AI-Verse Memory canonical mutation lock: {lock}") from exc
             time.sleep(0.05)
@@ -277,8 +315,19 @@ def _mutation_lock(engine, root: Path, mode: str):
             raise RuntimeError(f"Could not acquire Memory mutation lock: {exc}") from exc
 
     try:
+        holder = hashlib.sha256(
+            f"{os.getpid()}:{threading.get_ident()}:{time.monotonic_ns()}".encode("utf-8")
+        ).hexdigest()[:20]
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"schema_version": PUBLIC_BETA_SCHEMA, "pid": os.getpid(), "created_at": _now_iso()}, handle)
+            json.dump(
+                {
+                    "schema_version": PUBLIC_BETA_SCHEMA,
+                    "pid": os.getpid(),
+                    "holder": holder,
+                    "created_at": _now_iso(),
+                },
+                handle,
+            )
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
