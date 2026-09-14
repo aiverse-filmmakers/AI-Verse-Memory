@@ -331,6 +331,219 @@ class OrientationMapTests(unittest.TestCase):
             self.assertEqual(final["counts"]["atomic_memory"], 0)
             self.assertNotIn("new-tag", {row["label"] for row in final["topics"]})
 
+    def test_source_fingerprint_tracks_authoritative_drift_without_cross_workspace_noise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            paths = self._write_large_fixture(root)
+
+            first = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            fingerprint = first["source_fingerprint"]
+            self.assertTrue(fingerprint.startswith("sha256:"))
+
+            beta_raw = paths["beta_path"].read_text(encoding="utf-8")
+            paths["beta_path"].write_text(
+                beta_raw.replace("private beta phrase", "private beta revised phrase", 1),
+                encoding="utf-8",
+            )
+            unrelated = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual(unrelated["source_fingerprint"], fingerprint)
+
+            alpha_raw = paths["alpha_path"].read_text(encoding="utf-8")
+            paths["alpha_path"].write_text(
+                alpha_raw.replace("verified checkpoint", "verified checkpoint revised", 1),
+                encoding="utf-8",
+            )
+            atomic_changed = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertNotEqual(atomic_changed["source_fingerprint"], fingerprint)
+
+            current = root / "workspaces" / "alpha" / "context" / "CURRENT.md"
+            current.write_text(
+                current.read_text(encoding="utf-8") + "\nUpdated current-source evidence.\n",
+                encoding="utf-8",
+            )
+            source_changed = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertNotEqual(
+                source_changed["source_fingerprint"],
+                atomic_changed["source_fingerprint"],
+            )
+
+            self._digest(
+                root,
+                workspace="alpha",
+                session_id="sess-alpha-fingerprint-second",
+                topic="Fingerprint follow-up",
+                summary="A second completed session changes canonical digest evidence.",
+            )
+            digest_changed = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertNotEqual(
+                digest_changed["source_fingerprint"],
+                source_changed["source_fingerprint"],
+            )
+
+    def test_stale_stored_projection_is_replaced_from_authoritative_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            paths = self._write_large_fixture(root)
+            before = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+
+            db = mem.ensure_layout(root, mem.MODE_NATIVE)["db"]
+            conn = sqlite3.connect(db)
+            try:
+                stale = dict(before)
+                stale["source_fingerprint"] = "sha256:" + ("0" * 64)
+                stale["topics"] = [{"label": "stale fabricated topic", "count": 999, "origins": ["invalid"]}]
+                conn.execute(
+                    "UPDATE orientation_maps SET projection_json=? WHERE scope=?",
+                    (json.dumps(stale, sort_keys=True), "workspace:alpha"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            raw = paths["alpha_path"].read_text(encoding="utf-8")
+            paths["alpha_path"].write_text(
+                raw.replace("verified checkpoint", "fresh canonical checkpoint", 1),
+                encoding="utf-8",
+            )
+            refreshed = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertNotEqual(refreshed["source_fingerprint"], stale["source_fingerprint"])
+            self.assertNotIn(
+                "stale fabricated topic",
+                {row["label"] for row in refreshed["topics"]},
+            )
+
+            conn = sqlite3.connect(db)
+            try:
+                stored = json.loads(
+                    conn.execute(
+                        "SELECT projection_json FROM orientation_maps WHERE scope=?",
+                        ("workspace:alpha",),
+                    ).fetchone()[0]
+                )
+            finally:
+                conn.close()
+            self.assertEqual(stored, refreshed)
+
+    def test_configured_budget_is_hard_deterministic_and_preserves_core_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            self._write_large_fixture(root)
+            for index in range(14):
+                self._digest(
+                    root,
+                    workspace="alpha",
+                    session_id=f"sess-budget-{index:02d}",
+                    topic=(f"Budget topic {index:02d} " + ("navigation signal " * 8)).strip(),
+                    summary="Budget fixture historical evidence.",
+                )
+
+            full = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+                max_bytes=8192,
+            )
+            bounded = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+                max_bytes=2200,
+            )
+            repeated = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+                max_bytes=2200,
+            )
+
+            rendered = json.dumps(
+                bounded,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.assertLessEqual(len(rendered), 2200)
+            self.assertTrue(bounded["truncated"])
+            self.assertEqual(bounded["budget_bytes"], 2200)
+            self.assertEqual(bounded["source_fingerprint"], full["source_fingerprint"])
+            self.assertEqual(bounded["counts"], full["counts"])
+            self.assertEqual(bounded["memory_types"], full["memory_types"])
+            self.assertEqual(bounded["source_kinds"], full["source_kinds"])
+            self.assertEqual(repeated, bounded)
+            with self.assertRaises(ValueError):
+                mem.get_orientation_map(
+                    workspace="alpha",
+                    root=root,
+                    mode=mem.MODE_NATIVE,
+                    max_bytes=512,
+                )
+
+    def test_diagnostics_are_bounded_content_free_and_match_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            self._write_large_fixture(root)
+
+            projection = mem.get_orientation_map(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+                max_bytes=4096,
+            )
+            diagnostics = mem.get_orientation_map_diagnostics(
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+                max_bytes=4096,
+            )
+            expected_bytes = len(
+                json.dumps(
+                    projection,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            self.assertEqual(diagnostics["projection_bytes"], expected_bytes)
+            self.assertEqual(diagnostics["estimated_tokens"], (expected_bytes + 3) // 4)
+            self.assertEqual(diagnostics["source_fingerprint"], projection["source_fingerprint"])
+            self.assertEqual(diagnostics["source_counts"], projection["counts"])
+            self.assertEqual(diagnostics["freshness"], "fresh")
+            self.assertLessEqual(diagnostics["projection_bytes"], diagnostics["budget_bytes"])
+
+            rendered = json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+            self.assertNotIn("Alpha historical delivery workflow", rendered)
+            self.assertNotIn("Alpha completed-session summary", rendered)
+            self.assertNotIn("Beta private", rendered)
+            self.assertNotIn("chain", rendered.lower())
+
     def test_map_generation_never_rewrites_canonical_owner_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._native_root(Path(tmp))
