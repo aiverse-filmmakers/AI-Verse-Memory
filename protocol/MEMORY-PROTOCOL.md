@@ -113,6 +113,23 @@ A correction must name the exact historical Memory record it supersedes. Memory 
 
 Session digests remain evidence/navigation. Promotion never turns the whole digest or transcript into atomic Memory automatically.
 
+## Tiny orientation map
+
+`get_orientation_map` exposes a disposable per-scope routing projection before deeper recall.
+
+The map contains only compact metadata:
+
+- visible scope bindings;
+- counts of active atomic Memory, indexed owner sources, and session digests;
+- active Memory type counts;
+- indexed source kind counts and a tiny set of source routes;
+- explicit Memory tags and session-digest topics;
+- recent digest identifiers/topics for escalation to session-level history.
+
+It does not copy atomic Memory text, current-source bodies, digest summaries, or raw transcripts. Workspace maps follow existing Memory visibility rules: the bound workspace plus operator context, never another workspace.
+
+The projection lives only in the derived SQLite database. Every public map read rebuilds from canonical atomic metadata, refreshed current-source index state, and the canonical session-digest projection so deletion/rebuild and source removal remain lossless.
+
 ## Supersession
 
 Changed historical Memory preserves chronology. The replacement points to the old memory, the old memory becomes superseded, and a recovery journal protects the multi-file effect from interruption.
