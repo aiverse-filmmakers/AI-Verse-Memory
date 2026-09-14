@@ -612,21 +612,6 @@ def apply(engine) -> None:
             spec.loader.exec_module(orientation)
         orientation.apply(engine)
 
-    progressive_path = Path(__file__).resolve().parent / "progressive_recall.py"
-    if progressive_path.exists():
-        module_name = "_aiverse_memory_progressive_recall"
-        progressive = sys.modules.get(module_name)
-        if progressive is None:
-            spec = importlib.util.spec_from_file_location(module_name, progressive_path)
-            if spec is None or spec.loader is None:
-                raise RuntimeError(
-                    f"Could not load progressive recall extension: {progressive_path}"
-                )
-            progressive = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = progressive
-            spec.loader.exec_module(progressive)
-        progressive.apply(engine)
-
     relationships_path = Path(__file__).resolve().parent / "relationship_projection.py"
     if relationships_path.exists():
         module_name = "_aiverse_memory_relationship_projection"
@@ -641,3 +626,18 @@ def apply(engine) -> None:
             sys.modules[module_name] = relationships
             spec.loader.exec_module(relationships)
         relationships.apply(engine)
+
+    progressive_path = Path(__file__).resolve().parent / "progressive_recall.py"
+    if progressive_path.exists():
+        module_name = "_aiverse_memory_progressive_recall"
+        progressive = sys.modules.get(module_name)
+        if progressive is None:
+            spec = importlib.util.spec_from_file_location(module_name, progressive_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(
+                    f"Could not load progressive recall extension: {progressive_path}"
+                )
+            progressive = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = progressive
+            spec.loader.exec_module(progressive)
+        progressive.apply(engine)

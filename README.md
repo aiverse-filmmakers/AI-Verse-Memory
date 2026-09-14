@@ -154,7 +154,7 @@ D1 relationships come only from explicit canonical metadata/provenance: atomic `
 
 The SQLite `memory_relationships` table is derived state. Deleting it is safe; the next rebuild recreates it from canonical atomics and validated session digests. Public relationship reads refresh before returning results, so removed or changed canonical metadata drops stale edges. Workspace visibility follows established Memory scope rules.
 
-D1 does **not** traverse neighbors or expand recall through the graph. D2 owns the benchmarked ship/reject decision for that behavior.
+D1 itself does not traverse neighbors. D2 benchmark evidence permits one narrow runtime exception: detail-depth progressive recall may add up to four one-hop relationship neighbors only when the query explicitly asks for historical/correction context or provenance/evidence context. Current-truth queries, summary/catalog/source depths, unscoped graph walks, and multi-hop traversal do not expand relationships. The existing progressive-recall result-count and byte budgets still apply.
 
 ## Update, disable, enable, uninstall
 

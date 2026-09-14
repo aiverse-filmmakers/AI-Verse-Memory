@@ -253,15 +253,72 @@ def canonical_fingerprint(root: Path) -> str:
 
 
 def direct(mem, root: Path, query: str) -> Dict[str, Any]:
-    return mem.progressive_recall(
+    """Reconstruct the accepted direct-only detail baseline.
+
+    Do not call progressive_recall here: after D2 ships, that public surface may
+    itself add relationship neighbors. The benchmark must keep a stable control
+    group so future runs still compare direct retrieval against one-hop expansion.
+    """
+    digests = mem.recall_session_digests(
         query,
-        depth="detail",
         workspace="alpha",
         limit=DIRECT_LIMIT,
-        max_bytes=MAX_BYTES,
         root=root,
         mode=mem.MODE_NATIVE,
     )
+    records = mem.recall(
+        query,
+        workspace="alpha",
+        limit=DIRECT_LIMIT,
+        include_history=False,
+        root=root,
+        mode=mem.MODE_NATIVE,
+        all_workspaces=False,
+    )
+
+    items: List[Dict[str, Any]] = []
+    count = max(len(digests), len(records))
+    for index in range(count):
+        if index < len(digests):
+            digest_row = digests[index]
+            items.append(
+                {
+                    "record_type": "session_digest",
+                    "id": str(digest_row.get("id") or ""),
+                    "scope": str(digest_row.get("scope") or ""),
+                    "topic": str(digest_row.get("topic") or ""),
+                    "summary": str(digest_row.get("summary") or ""),
+                }
+            )
+            if len(items) >= DIRECT_LIMIT:
+                break
+        if index < len(records):
+            record_row = records[index]
+            items.append(
+                {
+                    "record_type": "indexed_record",
+                    "id": str(record_row["id"] or ""),
+                    "scope": str(record_row["scope"] or ""),
+                    "type": str(record_row["type"] or ""),
+                    "status": str(record_row["status"] or ""),
+                    "text": str(record_row["text"] or ""),
+                }
+            )
+            if len(items) >= DIRECT_LIMIT:
+                break
+
+    response = {
+        "schema_version": SCHEMA,
+        "benchmark_baseline": "direct-only-detail",
+        "depth": "detail",
+        "scope": "workspace:alpha",
+        "budget_bytes": MAX_BYTES,
+        "items": items,
+        "returned_items": len(items),
+    }
+    if nbytes(response) > MAX_BYTES:
+        raise RuntimeError("D2 direct-only benchmark baseline exceeded its byte budget")
+    return response
 
 
 def ids(response: Mapping[str, Any]) -> List[str]:

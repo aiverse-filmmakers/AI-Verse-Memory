@@ -32,6 +32,19 @@ DETAIL_TEXT_CHARS = 2800
 DETAIL_WHY_CHARS = 900
 DETAIL_DIGEST_CHARS = 2200
 MAX_DETAIL_LIST_ITEMS = 8
+MAX_RELATION_NEIGHBORS = 4
+MAX_RELATION_SCAN = 200
+
+_HISTORY_INTENT_TERMS = frozenset({
+    "before", "previous", "previously", "prior", "old", "older", "history",
+    "historical", "corrected", "correction", "superseded", "supersedes", "replaced",
+})
+_PROVENANCE_INTENT_TERMS = frozenset({
+    "source", "sources", "context", "evidence", "origin", "provenance",
+    "session", "run", "incident", "derived", "why",
+})
+_HISTORY_RELATIONS = frozenset({"supersedes", "superseded_by"})
+_PROVENANCE_RELATIONS = frozenset({"derived_from"})
 SOURCE_WINDOW_MIN_CHARS = 256
 SOURCE_WINDOW_MAX_CHARS = 12000
 
@@ -278,6 +291,142 @@ def _interleave(
             if len(result) >= limit:
                 break
     return result
+
+
+
+def _relationship_intent(engine, query: str) -> List[str]:
+    terms = {str(term).casefold() for term in engine.tokenize(query)}
+    relations = set()
+    if terms & _HISTORY_INTENT_TERMS:
+        relations.update(_HISTORY_RELATIONS)
+    if terms & _PROVENANCE_INTENT_TERMS:
+        relations.update(_PROVENANCE_RELATIONS)
+    return sorted(relations)
+
+
+def _indexed_relationship_detail(
+    engine,
+    *,
+    record_id: str,
+    expected_scope: str,
+    root: Path,
+    mode: str,
+) -> Optional[Dict[str, Any]]:
+    conn, fts = engine.connect_db(root, mode)
+    try:
+        engine._purge_invalid_indexed_sources(conn, fts, root, mode)
+        if mode == engine.MODE_NATIVE:
+            engine._refresh_native_canonical_sources(conn, fts, root, mode)
+        engine._ensure_historical_source_state(conn, root, mode)
+        row = conn.execute(
+            """
+            SELECT i.*, s.source_identity, s.source_version, s.freshness, s.indexed_at
+            FROM items i
+            LEFT JOIN source_state s ON s.item_id=i.id
+            WHERE i.id=? AND i.scope=?
+            LIMIT 1
+            """,
+            (record_id, expected_scope),
+        ).fetchone()
+        if row is None or not engine._indexed_source_is_valid(row, root, mode):
+            return None
+        return _record_detail(row)
+    finally:
+        conn.close()
+
+
+def _relationship_neighbors(
+    engine,
+    *,
+    items: Sequence[Dict[str, Any]],
+    relation_types: Sequence[str],
+    scope: Optional[str],
+    workspace: Optional[str],
+    root: Path,
+    mode: str,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    if not relation_types or limit <= 0:
+        return []
+
+    seeds = {
+        str(item.get("id") or "")
+        for item in items
+        if item.get("record_type") == "indexed_record" and item.get("id")
+    }
+    if not seeds:
+        return []
+
+    edges = engine.list_relationships(
+        scope=scope,
+        workspace=workspace,
+        limit=MAX_RELATION_SCAN,
+        root=root,
+        mode=mode,
+    )
+    wanted_relations = set(relation_types)
+    existing = {
+        (str(item.get("record_type") or ""), str(item.get("id") or ""))
+        for item in items
+    }
+    neighbors: List[Dict[str, Any]] = []
+
+    for edge in edges:
+        relation = str(edge.get("relation_type") or "")
+        source_ref = str(edge.get("source_ref") or "")
+        if relation not in wanted_relations or source_ref not in seeds:
+            continue
+
+        target_kind = str(edge.get("target_kind") or "")
+        target_ref = str(edge.get("target_ref") or "")
+        target_scope = str(edge.get("target_scope") or edge.get("scope") or "")
+        if not target_ref or not target_scope:
+            continue
+
+        neighbor: Optional[Dict[str, Any]] = None
+        if target_kind == "atomic_memory" and relation in _HISTORY_RELATIONS:
+            neighbor = _indexed_relationship_detail(
+                engine,
+                record_id=target_ref,
+                expected_scope=target_scope,
+                root=root,
+                mode=mode,
+            )
+        elif target_kind == "session_digest" and relation in _PROVENANCE_RELATIONS:
+            try:
+                record = engine.read_session_digest(
+                    target_ref,
+                    scope=target_scope,
+                    root=root,
+                    mode=mode,
+                )
+            except (FileNotFoundError, RuntimeError, ValueError):
+                continue
+            if str(record.get("scope") or "") != target_scope:
+                continue
+            neighbor = _digest_detail(record)
+
+        if neighbor is None:
+            continue
+
+        key = (str(neighbor.get("record_type") or ""), str(neighbor.get("id") or ""))
+        if key in existing:
+            continue
+
+        neighbor["relationship_neighbor"] = True
+        neighbor["relationship"] = {
+            "edge_id": str(edge.get("edge_id") or ""),
+            "relation_type": relation,
+            "source_ref": source_ref,
+            "target_ref": target_ref,
+            "one_hop_only": True,
+        }
+        neighbors.append(neighbor)
+        existing.add(key)
+        if len(neighbors) >= limit:
+            break
+
+    return neighbors
 
 
 def _item_shell(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -935,6 +1084,8 @@ def apply(engine) -> None:
         "_source_version",
         "paths",
         "read_session_digest",
+        "list_relationships",
+        "tokenize",
     )
     missing = [name for name in required if not hasattr(engine, name)]
     if missing:
@@ -1022,6 +1173,24 @@ def apply(engine) -> None:
             depth=depth_value,
             limit=limit_value,
         )
+        relationship_types = (
+            _relationship_intent(engine, query_value)
+            if depth_value == "detail"
+            else []
+        )
+        relationship_neighbors: List[Dict[str, Any]] = []
+        if relationship_types and len(items) < limit_value:
+            relationship_neighbors = _relationship_neighbors(
+                engine,
+                items=items,
+                relation_types=relationship_types,
+                scope=scope,
+                workspace=workspace,
+                root=resolved_root,
+                mode=resolved_mode,
+                limit=min(MAX_RELATION_NEIGHBORS, limit_value - len(items)),
+            )
+            items.extend(relationship_neighbors)
         deeper = any(bool(item.get("deeper_evidence_available")) for item in items)
         response = {
             "schema_version": PROGRESSIVE_RECALL_SCHEMA,
@@ -1037,11 +1206,19 @@ def apply(engine) -> None:
             "candidate_counts": {
                 "session_digests": len(digests),
                 "indexed_records": len(records),
+                "relationship_neighbors": len(relationship_neighbors),
             },
             "provenance": {
                 "owner": "ai-verse-memory",
                 "kind": "progressive_retrieval",
                 "query_bound": True,
+                "relationship_expansion": {
+                    "enabled": bool(relationship_types),
+                    "relations": relationship_types,
+                    "one_hop_only": True,
+                    "max_neighbors": MAX_RELATION_NEIGHBORS,
+                    "neighbors_added": len(relationship_neighbors),
+                },
             },
         }
         return _append_with_budget(
@@ -1058,3 +1235,5 @@ def apply(engine) -> None:
     engine.PROGRESSIVE_RECALL_DEFAULT_MAX_BYTES = DEFAULT_MAX_BYTES
     engine.PROGRESSIVE_RECALL_MIN_MAX_BYTES = MIN_MAX_BYTES
     engine.PROGRESSIVE_RECALL_MAX_MAX_BYTES = MAX_MAX_BYTES
+    engine.PROGRESSIVE_RECALL_MAX_RELATION_NEIGHBORS = MAX_RELATION_NEIGHBORS
+    engine.PROGRESSIVE_RECALL_MAX_RELATION_SCAN = MAX_RELATION_SCAN
