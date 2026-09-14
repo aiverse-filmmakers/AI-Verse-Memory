@@ -981,6 +981,16 @@ def apply(engine) -> None:
     engine.public_beta_mutation_lock = lambda root, mode: _mutation_lock(engine, Path(root), mode)
     engine.public_beta_atomic_write_json = _atomic_write_json
     engine.public_beta_atomic_write_text = _atomic_write_text
+    engine.public_beta_payload_digest = _payload_digest
+    engine.public_beta_effect_path = lambda root, mode, effect_id: _effect_path(engine, Path(root), mode, effect_id)
+    engine.public_beta_load_effect = lambda root, mode, effect_id, digest: _load_effect(
+        engine, Path(root), mode, effect_id, digest
+    )
+    engine.public_beta_safe_child_dir = _safe_child_dir
+    engine.public_beta_native_memory_base = lambda root, scope: _native_atomic_base(
+        engine, Path(root), scope
+    ).parent
+    engine.public_beta_standalone_home = lambda root: _standalone_home(engine, Path(root))
     engine.public_beta_authority_file = lambda root, mode: _authority_file(engine, Path(root), mode)
     engine.public_beta_assert_writable_authority = lambda root, mode: _assert_writable_authority(engine, Path(root), mode)
     engine.public_beta_component_state_path = lambda root, mode: component_state_path(engine, Path(root), mode)
