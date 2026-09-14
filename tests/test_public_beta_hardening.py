@@ -116,6 +116,43 @@ class PublicBetaHardeningTests(unittest.TestCase):
                     mode=mem.MODE_NATIVE,
                 )
 
+    def test_incremental_write_recovers_losslessly_if_derived_db_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            first_id, _, created = mem.write_atomic(
+                "first canonical record before derived database deletion",
+                "fact",
+                "workspace:alpha",
+                effect_id="incremental-first",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertTrue(created)
+
+            db = mem.ensure_layout(root, mem.MODE_NATIVE)["db"]
+            db.unlink()
+
+            second_id, _, second_created = mem.write_atomic(
+                "second canonical record after derived database deletion",
+                "fact",
+                "workspace:alpha",
+                effect_id="incremental-second",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertTrue(second_created)
+
+            rows = mem.recall(
+                "canonical record derived database deletion",
+                workspace="alpha",
+                limit=20,
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            ids = {row["id"] for row in rows}
+            self.assertIn(first_id, ids)
+            self.assertIn(second_id, ids)
+
     def test_concurrent_writers_are_serialized_without_losing_memories(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._native_root(Path(tmp))
