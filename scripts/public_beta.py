@@ -445,6 +445,72 @@ def _record_effect(
     _atomic_write_json(receipt, payload)
 
 
+def _sync_atomic_projection(
+    engine,
+    original_rebuild,
+    root: Path,
+    mode: str,
+    *,
+    paths: Sequence[Path] = (),
+    remove_ids: Sequence[str] = (),
+) -> None:
+    """Keep disposable atomic recall state current without a full rebuild.
+
+    Canonical mutation remains serialized. The derived SQLite projection is
+    updated only for records changed by the current canonical effect. If the
+    shared derived DB is absent, fall back to the established full rebuild so
+    all pre-existing canonical records are recovered losslessly.
+    """
+
+    layout = engine.ensure_layout(root, mode)
+    if not layout["db"].exists():
+        original_rebuild(silent=True, root=root, mode=mode)
+        return
+
+    rows = []
+    delete_ids = [str(item) for item in remove_ids if str(item)]
+    for raw_path in paths:
+        row = engine.index_atomic(Path(raw_path), root, mode)
+        if row is None:
+            raise RuntimeError(
+                f"Canonical Memory mutation could not be indexed safely: {raw_path}"
+            )
+        delete_ids.append(str(row[0]))
+        rows.append(row)
+
+    conn, fts = engine.connect_db(root, mode)
+    try:
+        engine._delete_index_ids(conn, fts, delete_ids)
+        engine._insert_index_rows(conn, fts, rows)
+        if mode == engine.MODE_NATIVE:
+            states = []
+            for row in rows:
+                state = engine._source_state_for_row(
+                    row,
+                    root,
+                    "historical",
+                    mode,
+                )
+                if state is None:
+                    raise RuntimeError(
+                        f"Canonical Memory source state could not be derived: {row[0]}"
+                    )
+                states.append(state)
+            engine._upsert_source_states(conn, states)
+        conn.commit()
+    except Exception:
+        conn.close()
+        # SQLite is disposable. Rebuild from canonical Markdown instead of
+        # leaving a partially updated projection after an indexing failure.
+        original_rebuild(silent=True, root=root, mode=mode)
+        return
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _authority_file(engine, root: Path, mode: str) -> Path:
     if mode == engine.MODE_STANDALONE:
         return _standalone_home(engine, root) / "AUTHORITY.json"
@@ -553,7 +619,13 @@ def _patched_write_atomic(engine, original_rebuild):
             if why.strip():
                 body += f"\n# Why it matters\n\n{why.strip()}\n"
             _atomic_write_text(path, engine.render_frontmatter(meta) + "\n\n" + body)
-            original_rebuild(silent=True, root=root, mode=mode)
+            _sync_atomic_projection(
+                engine,
+                original_rebuild,
+                root,
+                mode,
+                paths=[path],
+            )
             _record_effect(engine, root, mode, effect_id, effect_digest, mem_id, path)
             return mem_id, path, True
 
@@ -786,7 +858,13 @@ def _patched_supersede_atomic(engine, original_rebuild):
             )
             _atomic_write_text(new_path, new_content)
             _atomic_write_text(old_path, replaced_content)
-            original_rebuild(silent=True, root=root, mode=mode)
+            _sync_atomic_projection(
+                engine,
+                original_rebuild,
+                root,
+                mode,
+                paths=[old_path, new_path],
+            )
             _record_effect(
                 engine,
                 root,
@@ -855,7 +933,13 @@ def _patched_forget(engine, original_rebuild):
             else:
                 _assert_path_within(path, _standalone_atomic_base(engine, root))
             path.unlink()
-            original_rebuild(silent=True, root=root, mode=mode)
+            _sync_atomic_projection(
+                engine,
+                original_rebuild,
+                root,
+                mode,
+                remove_ids=[mem_id],
+            )
             print(f"Forgot: {mem_id}")
 
     return forget_memory
@@ -908,7 +992,13 @@ def _patched_supersede(engine, original_rebuild):
             journal = _write_transaction(engine, root, mode, tx_id, [(new_path, new_content), (old_path, old_content)])
             _atomic_write_text(new_path, new_content)
             _atomic_write_text(old_path, old_content)
-            original_rebuild(silent=True, root=root, mode=mode)
+            _sync_atomic_projection(
+                engine,
+                original_rebuild,
+                root,
+                mode,
+                paths=[old_path, new_path],
+            )
             try:
                 journal.unlink()
             except FileNotFoundError:
