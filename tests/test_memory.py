@@ -329,6 +329,152 @@ class NativeMemoryTests(unittest.TestCase):
         self.assertIn("context", kinds)
         self.assertIn("decision", kinds)
 
+    def _safe_capture_candidate(self, **overrides):
+        candidate = {
+            "text": "Client Alpha delivery worked best with concise review notes.",
+            "type": "lesson",
+            "workspace": "alpha",
+            "importance": 4,
+            "confidence": 0.95,
+            "source": "gateway-run",
+            "why": "This pattern is likely to matter on later Client Alpha deliveries.",
+            "tags": "delivery,review",
+            "effect_id": "run:test-memory-capture:lesson-1",
+            "evidence_refs": ["run:test-memory-capture", "artifact:delivery-review"],
+            "admission": {
+                "durable": True,
+                "historical": True,
+                "current_truth": False,
+                "contains_secret": False,
+                "strategic": False,
+                "permission_expansion": False,
+                "privacy_ambiguous": False,
+                "external_authority": False,
+            },
+        }
+        for key, value in overrides.items():
+            if key == "admission":
+                candidate["admission"] = {**candidate["admission"], **value}
+            else:
+                candidate[key] = value
+        return candidate
+
+    def test_safe_capture_accepts_only_bounded_historical_evidence(self):
+        result = mem.capture_candidate(
+            self._safe_capture_candidate(),
+            root=self.root,
+            mode=mem.MODE_NATIVE,
+        )
+        self.assertEqual(result["state"], "captured")
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["scope"], "workspace:alpha")
+        path = self.root / result["path"]
+        self.assertTrue(path.is_file())
+        meta, body = mem.parse_markdown(path)
+        self.assertEqual(meta["type"], "lesson")
+        self.assertEqual(meta["scope"], "workspace:alpha")
+        self.assertEqual(meta["source"], "gateway-run")
+        self.assertIn("run:test-memory-capture", meta["evidence_refs"])
+        self.assertIn("concise review notes", body)
+
+        replay = mem.capture_candidate(
+            self._safe_capture_candidate(),
+            root=self.root,
+            mode=mem.MODE_NATIVE,
+        )
+        self.assertEqual(replay["state"], "existing")
+        self.assertFalse(replay["changed"])
+        self.assertEqual(replay["memory_id"], result["memory_id"])
+
+    def test_safe_capture_fails_closed_on_current_secret_or_unsafe_types(self):
+        cases = [
+            self._safe_capture_candidate(
+                effect_id="capture-current",
+                admission={"current_truth": True},
+            ),
+            self._safe_capture_candidate(
+                effect_id="capture-strategic",
+                admission={"strategic": True},
+            ),
+            self._safe_capture_candidate(
+                effect_id="capture-permission",
+                admission={"permission_expansion": True},
+            ),
+            self._safe_capture_candidate(
+                effect_id="capture-private",
+                admission={"privacy_ambiguous": True},
+            ),
+            self._safe_capture_candidate(
+                effect_id="capture-state",
+                type="state",
+            ),
+            self._safe_capture_candidate(
+                effect_id="capture-secret",
+                text="API key = sk-abcdefghijklmnopqrstuvwxyz1234567890",
+            ),
+        ]
+        for candidate in cases:
+            with self.subTest(candidate=candidate["effect_id"]):
+                result = mem.capture_candidate(candidate, root=self.root, mode=mem.MODE_NATIVE)
+                self.assertIn(result["state"], {"blocked", "ignored"})
+                self.assertFalse(result["changed"])
+
+        rows = mem.recall(
+            "abcdefghijklmnopqrstuvwxyz1234567890",
+            workspace="alpha",
+            include_history=True,
+            root=self.root,
+            mode=mem.MODE_NATIVE,
+        )
+        self.assertEqual(rows, [])
+
+    def test_safe_capture_ignores_weak_or_nonhistorical_candidates(self):
+        weak = mem.capture_candidate(
+            self._safe_capture_candidate(effect_id="capture-weak", confidence=0.5),
+            root=self.root,
+            mode=mem.MODE_NATIVE,
+        )
+        self.assertEqual(weak["state"], "ignored")
+        nonhistorical = mem.capture_candidate(
+            self._safe_capture_candidate(
+                effect_id="capture-nonhistorical",
+                admission={"historical": False},
+            ),
+            root=self.root,
+            mode=mem.MODE_NATIVE,
+        )
+        self.assertEqual(nonhistorical["state"], "ignored")
+
+    def test_safe_capture_requires_provenance_retry_key_and_valid_scope(self):
+        for field in ("source", "effect_id"):
+            candidate = self._safe_capture_candidate()
+            candidate[field] = ""
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError):
+                    mem.capture_candidate(candidate, root=self.root, mode=mem.MODE_NATIVE)
+
+        no_evidence = self._safe_capture_candidate(effect_id="capture-no-evidence")
+        no_evidence["evidence_refs"] = []
+        with self.assertRaises(ValueError):
+            mem.capture_candidate(no_evidence, root=self.root, mode=mem.MODE_NATIVE)
+
+        unknown = self._safe_capture_candidate(
+            effect_id="capture-unknown-workspace",
+            workspace="missing",
+        )
+        with self.assertRaises(ValueError):
+            mem.capture_candidate(unknown, root=self.root, mode=mem.MODE_NATIVE)
+
+    def test_safe_capture_effect_id_reuse_with_different_payload_fails(self):
+        first = self._safe_capture_candidate(effect_id="capture-idempotency")
+        mem.capture_candidate(first, root=self.root, mode=mem.MODE_NATIVE)
+        changed = self._safe_capture_candidate(
+            effect_id="capture-idempotency",
+            text="Different historical lesson under the same retry identity.",
+        )
+        with self.assertRaises(RuntimeError):
+            mem.capture_candidate(changed, root=self.root, mode=mem.MODE_NATIVE)
+
     def test_unknown_workspace_refuses_write(self):
         with self.assertRaises(ValueError):
             mem.write_atomic(

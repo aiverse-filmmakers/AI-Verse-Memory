@@ -76,6 +76,25 @@ Legacy `decision` and `project_state` remain accepted for compatibility.
 
 Use `source` and repeatable `--evidence-ref` to retain historical provenance. Use `--effect-id` for retry-safe owner-routed capture when an effect may be replayed.
 
+## Automatic safe capture
+
+Runtime/Brain classification may suggest a historical memory, but Memory owns final admission through `capture_candidate`.
+
+Automatic capture is eligible only when the caller supplies bounded evidence proving all of the following:
+
+- the candidate is durable and historical;
+- it is not current canonical truth;
+- it is not strategic authority;
+- it does not contain secrets;
+- privacy/scope is not ambiguous;
+- it does not expand permission or external authority;
+- confidence is at least the automatic threshold;
+- provenance source, evidence refs, and retry-safe `effect_id` are present.
+
+Automatic capture is limited to historical `fact`, `preference`, `entity`, `event`, `experience`, `workflow`, `lesson`, and `correction` records. Current `state`, `constraint`, `decision`, and legacy `project_state` remain outside this automatic path.
+
+The admission gate is a thin wrapper over the existing canonical `write_atomic` mutation. It creates no second Memory store or writer.
+
 ## Supersession
 
 Changed historical Memory preserves chronology. The replacement points to the old memory, the old memory becomes superseded, and a recovery journal protects the multi-file effect from interruption.
