@@ -14,11 +14,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 PROGRESSIVE_RECALL_SCHEMA = 1
 PROGRESSIVE_RECALL_VERSION = "memory.progressive-recall.v1"
-SUPPORTED_DEPTHS = ("catalog", "summary", "detail")
+SUPPORTED_DEPTHS = ("catalog", "summary", "detail", "source")
 DEFAULT_LIMIT = 8
 MAX_LIMIT = 20
 DEFAULT_MAX_BYTES = 16384
@@ -32,6 +32,8 @@ DETAIL_TEXT_CHARS = 2800
 DETAIL_WHY_CHARS = 900
 DETAIL_DIGEST_CHARS = 2200
 MAX_DETAIL_LIST_ITEMS = 8
+SOURCE_WINDOW_MIN_CHARS = 256
+SOURCE_WINDOW_MAX_CHARS = 12000
 
 
 def _stable_json(value: object) -> str:
@@ -97,10 +99,6 @@ def _validate(
             f"expected {PROGRESSIVE_RECALL_VERSION!r}"
         )
     if depth not in SUPPORTED_DEPTHS:
-        if depth == "source":
-            raise ValueError(
-                "source depth is reserved for the C2 exact-source extension and is not available yet"
-            )
         raise ValueError(f"Unsupported progressive recall depth: {depth!r}")
     if not isinstance(query, str):
         raise ValueError("query must be a string")
@@ -338,6 +336,527 @@ def _append_with_budget(
     return response
 
 
+def _authorized_scope(
+    engine,
+    *,
+    requested_scope: Optional[str],
+    workspace: Optional[str],
+    evidence_scope: str,
+    root: Path,
+    mode: str,
+) -> str:
+    normalized_evidence = engine.normalize_scope(evidence_scope, root, mode)
+    visible, primary = engine.allowed_scopes(
+        root,
+        mode,
+        scope=requested_scope,
+        workspace=workspace,
+        all_workspaces=False,
+    )
+    if visible is not None and normalized_evidence not in visible:
+        raise ValueError(
+            f"Exact-source evidence scope {normalized_evidence} is not authorized for this request"
+        )
+    return str(primary or normalized_evidence)
+
+
+def _normalize_evidence_ref(value: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    if value is None or not isinstance(value, Mapping):
+        raise ValueError("source depth requires evidence_ref from a prior detail item")
+    record_type = str(value.get("record_type") or "").strip()
+    record_id = str(value.get("id") or "").strip()
+    scope = str(value.get("scope") or "").strip()
+    evidence = value.get("evidence")
+    if record_type not in {"indexed_record", "session_digest"}:
+        raise ValueError("evidence_ref record_type must be indexed_record or session_digest")
+    if not record_id:
+        raise ValueError("evidence_ref requires id")
+    if not scope:
+        raise ValueError("evidence_ref requires scope")
+    if not isinstance(evidence, Mapping):
+        raise ValueError("evidence_ref requires an evidence object")
+    return {
+        "record_type": record_type,
+        "id": record_id,
+        "scope": scope,
+        "evidence": dict(evidence),
+    }
+
+
+def _source_failure(
+    *,
+    scope: str,
+    budget: int,
+    record_type: str,
+    record_id: str,
+    status: str,
+    reason: str,
+    evidence: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    response = {
+        "schema_version": PROGRESSIVE_RECALL_SCHEMA,
+        "api_version": PROGRESSIVE_RECALL_VERSION,
+        "depth": "source",
+        "scope": scope,
+        "budget_bytes": budget,
+        "status": status,
+        "reason": reason,
+        "exact_evidence": False,
+        "source_depth_available": True,
+        "record_type": record_type,
+        "id": record_id,
+        "provenance": {
+            "owner": "ai-verse-memory",
+            "kind": "exact_source_validation",
+            "scope_revalidated": True,
+            "content_returned": False,
+        },
+    }
+    if evidence:
+        response["evidence"] = dict(evidence)
+    if _serialized_bytes(response) > budget:
+        raise ValueError(f"exact-source failure response exceeds configured budget {budget}")
+    return response
+
+
+def _resolved_index_path(engine, row, root: Path, mode: str) -> Path:
+    stored = Path(str(_row_value(row, "path")))
+    if mode == engine.MODE_NATIVE:
+        if stored.is_absolute() or not stored.parts:
+            raise ValueError("Indexed native source path is not safely relative")
+        source = root / stored
+        if not engine._indexed_source_is_valid(row, root, mode):
+            raise ValueError("Indexed native source failed containment or scope validation")
+        return source.resolve(strict=True)
+
+    source = stored if stored.is_absolute() else root / stored
+    resolved = source.resolve(strict=True)
+    home = engine.paths(root, mode)["home"].resolve(strict=True)
+    try:
+        resolved.relative_to(home)
+    except ValueError as exc:
+        raise ValueError("Standalone indexed source resolves outside Memory home") from exc
+    if not resolved.is_file():
+        raise ValueError("Standalone indexed source is not a regular file")
+    return resolved
+
+
+def _source_window(engine, text: str, query: str, max_chars: int) -> Dict[str, Any]:
+    if max_chars < SOURCE_WINDOW_MIN_CHARS:
+        max_chars = SOURCE_WINDOW_MIN_CHARS
+    max_chars = min(SOURCE_WINDOW_MAX_CHARS, max_chars)
+    total = len(text)
+    if total <= max_chars:
+        start = 0
+        stop = total
+        matched = True if query and query.casefold() in text.casefold() else False
+    else:
+        lowered = text.casefold()
+        query_lower = query.casefold().strip()
+        hit = lowered.find(query_lower) if query_lower else -1
+        if hit < 0:
+            terms = sorted(
+                {term for term in engine.tokenize(query) if len(term) >= 2},
+                key=len,
+                reverse=True,
+            )
+            for term in terms:
+                hit = lowered.find(term.casefold())
+                if hit >= 0:
+                    break
+        matched = hit >= 0
+        if hit < 0:
+            hit = 0
+        start = max(0, hit - max_chars // 3)
+        stop = min(total, start + max_chars)
+        if stop - start < max_chars:
+            start = max(0, stop - max_chars)
+
+    content = text[start:stop]
+    start_line = text.count("\n", 0, start) + 1
+    end_line = start_line + content.count("\n")
+    return {
+        "encoding": "utf-8",
+        "content": content,
+        "query_match": matched,
+        "window_start_char": start,
+        "window_end_char": stop,
+        "total_chars": total,
+        "start_line": start_line,
+        "end_line": end_line,
+        "content_truncated": start > 0 or stop < total,
+    }
+
+
+def _fit_exact_source_response(
+    engine,
+    *,
+    base: Dict[str, Any],
+    text: str,
+    query: str,
+    budget: int,
+) -> Dict[str, Any]:
+    max_chars = min(SOURCE_WINDOW_MAX_CHARS, max(SOURCE_WINDOW_MIN_CHARS, budget - 1800))
+    while True:
+        response = dict(base)
+        response["source"] = _source_window(engine, text, query, max_chars)
+        if _serialized_bytes(response) <= budget:
+            return response
+        if max_chars <= SOURCE_WINDOW_MIN_CHARS:
+            break
+        max_chars = max(SOURCE_WINDOW_MIN_CHARS, int(max_chars * 0.72))
+    raise ValueError(f"exact-source response cannot fit configured budget {budget}")
+
+
+def _indexed_exact_source(
+    engine,
+    *,
+    evidence_ref: Mapping[str, Any],
+    query: str,
+    requested_scope: Optional[str],
+    workspace: Optional[str],
+    root: Path,
+    mode: str,
+    budget: int,
+) -> Dict[str, Any]:
+    record_id = str(evidence_ref["id"])
+    evidence_scope = str(evidence_ref["scope"])
+    target_scope = _authorized_scope(
+        engine,
+        requested_scope=requested_scope,
+        workspace=workspace,
+        evidence_scope=evidence_scope,
+        root=root,
+        mode=mode,
+    )
+    expected = evidence_ref["evidence"]
+    expected_path = str(expected.get("path") or "")
+    expected_identity = str(expected.get("source_identity") or "")
+    expected_version = str(expected.get("source_version") or "")
+    if not expected_path or not expected_version:
+        raise ValueError("indexed_record source descent requires path and source_version")
+
+    p = engine.ensure_layout(root, mode)
+    if not p["db"].exists():
+        engine.rebuild(silent=True, root=root, mode=mode)
+    conn, fts = engine.connect_db(root, mode)
+    try:
+        engine._purge_invalid_indexed_sources(conn, fts, root, mode)
+        if mode == engine.MODE_NATIVE:
+            engine._refresh_native_canonical_sources(conn, fts, root, mode)
+        engine._ensure_historical_source_state(conn, root, mode)
+        row = conn.execute(
+            """
+            SELECT i.*, s.source_identity, s.source_version, s.freshness, s.indexed_at
+            FROM items i
+            LEFT JOIN source_state s ON s.item_id=i.id
+            WHERE i.id=?
+            """,
+            (record_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return _source_failure(
+            scope=target_scope,
+            budget=budget,
+            record_type="indexed_record",
+            record_id=record_id,
+            status="unavailable",
+            reason="source_missing_or_no_longer_indexed",
+            evidence={"path": expected_path, "expected_source_version": expected_version},
+        )
+
+    row_scope = str(_row_value(row, "scope"))
+    if engine.normalize_scope(row_scope, root, mode) != engine.normalize_scope(evidence_scope, root, mode):
+        raise ValueError("Exact-source record scope no longer matches evidence_ref")
+    row_path = str(_row_value(row, "path"))
+    if row_path != expected_path:
+        raise ValueError("Exact-source record path does not match evidence_ref")
+    current_identity = str(_row_value(row, "source_identity"))
+    if expected_identity and current_identity != expected_identity:
+        raise ValueError("Exact-source identity does not match evidence_ref")
+
+    try:
+        source_path = _resolved_index_path(engine, row, root, mode)
+        current_version = engine._canonical_source_version(source_path, root, row, mode)
+    except (FileNotFoundError, OSError, ValueError):
+        return _source_failure(
+            scope=target_scope,
+            budget=budget,
+            record_type="indexed_record",
+            record_id=record_id,
+            status="unavailable",
+            reason="source_failed_containment_or_read_validation",
+            evidence={"path": expected_path, "expected_source_version": expected_version},
+        )
+
+    if current_version != expected_version:
+        return _source_failure(
+            scope=target_scope,
+            budget=budget,
+            record_type="indexed_record",
+            record_id=record_id,
+            status="stale",
+            reason="source_version_mismatch",
+            evidence={
+                "path": row_path,
+                "source_identity": current_identity,
+                "expected_source_version": expected_version,
+                "current_source_version": current_version,
+            },
+        )
+
+    try:
+        raw = source_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return _source_failure(
+            scope=target_scope,
+            budget=budget,
+            record_type="indexed_record",
+            record_id=record_id,
+            status="unavailable",
+            reason="source_read_failed",
+            evidence={"path": row_path, "source_version": current_version},
+        )
+
+    base = {
+        "schema_version": PROGRESSIVE_RECALL_SCHEMA,
+        "api_version": PROGRESSIVE_RECALL_VERSION,
+        "depth": "source",
+        "scope": target_scope,
+        "budget_bytes": budget,
+        "status": "ok",
+        "reason": None,
+        "exact_evidence": True,
+        "source_depth_available": True,
+        "record_type": "indexed_record",
+        "id": record_id,
+        "kind": str(_row_value(row, "kind")),
+        "record_scope": row_scope,
+        "evidence": {
+            "path": row_path,
+            "source_identity": current_identity,
+            "source_version": current_version,
+            "freshness": "current",
+        },
+        "provenance": {
+            "owner": "ai-verse-memory",
+            "kind": "exact_canonical_source",
+            "scope_revalidated": True,
+            "containment_revalidated": True,
+            "version_revalidated": True,
+            "content_returned": True,
+        },
+    }
+    return _fit_exact_source_response(
+        engine,
+        base=base,
+        text=raw,
+        query=query,
+        budget=budget,
+    )
+
+
+def _digest_exact_source(
+    engine,
+    *,
+    evidence_ref: Mapping[str, Any],
+    requested_scope: Optional[str],
+    workspace: Optional[str],
+    root: Path,
+    mode: str,
+    budget: int,
+) -> Dict[str, Any]:
+    record_id = str(evidence_ref["id"])
+    evidence_scope = str(evidence_ref["scope"])
+    target_scope = _authorized_scope(
+        engine,
+        requested_scope=requested_scope,
+        workspace=workspace,
+        evidence_scope=evidence_scope,
+        root=root,
+        mode=mode,
+    )
+    expected = evidence_ref["evidence"]
+    expected_path = str(expected.get("path") or "")
+    expected_version = str(expected.get("canonical_version") or "")
+    expected_digest_fingerprint = str(expected.get("digest_fingerprint") or "")
+    if not expected_path or not expected_version:
+        raise ValueError("session_digest source descent requires path and canonical_version")
+
+    try:
+        record = engine.read_session_digest(
+            record_id,
+            scope=evidence_scope,
+            root=root,
+            mode=mode,
+        )
+    except FileNotFoundError:
+        return _source_failure(
+            scope=target_scope,
+            budget=budget,
+            record_type="session_digest",
+            record_id=record_id,
+            status="unavailable",
+            reason="canonical_digest_missing",
+            evidence={"path": expected_path, "expected_canonical_version": expected_version},
+        )
+    except (RuntimeError, ValueError, OSError):
+        return _source_failure(
+            scope=target_scope,
+            budget=budget,
+            record_type="session_digest",
+            record_id=record_id,
+            status="unavailable",
+            reason="canonical_digest_failed_containment_or_scope_validation",
+            evidence={"path": expected_path, "expected_canonical_version": expected_version},
+        )
+
+    current_path = str(record.get("path") or "")
+    if current_path != expected_path:
+        raise ValueError("Session-digest canonical path does not match evidence_ref")
+    path = Path(current_path)
+    if mode == engine.MODE_NATIVE:
+        if path.is_absolute():
+            raise ValueError("Native session-digest evidence path must be relative")
+        path = root / path
+    try:
+        current_version = engine._source_version(path.resolve(strict=True))
+    except (FileNotFoundError, OSError, ValueError):
+        return _source_failure(
+            scope=target_scope,
+            budget=budget,
+            record_type="session_digest",
+            record_id=record_id,
+            status="unavailable",
+            reason="canonical_digest_read_failed",
+            evidence={"path": expected_path, "expected_canonical_version": expected_version},
+        )
+
+    if current_version != expected_version:
+        return _source_failure(
+            scope=target_scope,
+            budget=budget,
+            record_type="session_digest",
+            record_id=record_id,
+            status="stale",
+            reason="canonical_digest_version_mismatch",
+            evidence={
+                "path": current_path,
+                "expected_canonical_version": expected_version,
+                "current_canonical_version": current_version,
+            },
+        )
+    current_digest_fingerprint = str(record.get("digest_fingerprint") or "")
+    if expected_digest_fingerprint and current_digest_fingerprint != expected_digest_fingerprint:
+        return _source_failure(
+            scope=target_scope,
+            budget=budget,
+            record_type="session_digest",
+            record_id=record_id,
+            status="stale",
+            reason="digest_fingerprint_mismatch",
+            evidence={
+                "path": current_path,
+                "canonical_version": current_version,
+                "expected_digest_fingerprint": expected_digest_fingerprint,
+                "current_digest_fingerprint": current_digest_fingerprint,
+            },
+        )
+
+    refs = record.get("source_refs") if isinstance(record.get("source_refs"), list) else []
+    coverage = record.get("source_coverage") if isinstance(record.get("source_coverage"), list) else []
+    if not refs:
+        return _source_failure(
+            scope=target_scope,
+            budget=budget,
+            record_type="session_digest",
+            record_id=record_id,
+            status="unavailable",
+            reason="original_source_not_available",
+            evidence={
+                "path": current_path,
+                "canonical_version": current_version,
+                "digest_fingerprint": current_digest_fingerprint,
+            },
+        )
+
+    response = {
+        "schema_version": PROGRESSIVE_RECALL_SCHEMA,
+        "api_version": PROGRESSIVE_RECALL_VERSION,
+        "depth": "source",
+        "scope": target_scope,
+        "budget_bytes": budget,
+        "status": "external_source_required",
+        "reason": "session_digest_is_navigation_not_original_transcript_evidence",
+        "exact_evidence": False,
+        "source_depth_available": True,
+        "record_type": "session_digest",
+        "id": record_id,
+        "record_scope": evidence_scope,
+        "evidence": {
+            "path": current_path,
+            "canonical_version": current_version,
+            "digest_fingerprint": current_digest_fingerprint,
+            "source_fingerprint": str(record.get("source_fingerprint") or ""),
+            "source_version": str(record.get("source_version") or ""),
+            "external_source_refs": list(refs[:MAX_DETAIL_LIST_ITEMS]),
+            "source_coverage": list(coverage[:MAX_DETAIL_LIST_ITEMS]),
+        },
+        "provenance": {
+            "owner": "ai-verse-memory",
+            "kind": "validated_digest_source_pointer",
+            "scope_revalidated": True,
+            "containment_revalidated": True,
+            "version_revalidated": True,
+            "content_returned": False,
+            "external_owner_required": True,
+        },
+    }
+    if _serialized_bytes(response) > budget:
+        response["evidence"]["external_source_refs"] = response["evidence"]["external_source_refs"][:2]
+        response["evidence"]["source_coverage"] = response["evidence"]["source_coverage"][:2]
+    if _serialized_bytes(response) > budget:
+        raise ValueError(f"session-digest source pointer response exceeds configured budget {budget}")
+    return response
+
+
+def _exact_source_response(
+    engine,
+    *,
+    evidence_ref: Optional[Mapping[str, Any]],
+    query: str,
+    requested_scope: Optional[str],
+    workspace: Optional[str],
+    root: Path,
+    mode: str,
+    budget: int,
+) -> Dict[str, Any]:
+    normalized = _normalize_evidence_ref(evidence_ref)
+    if normalized["record_type"] == "indexed_record":
+        return _indexed_exact_source(
+            engine,
+            evidence_ref=normalized,
+            query=query,
+            requested_scope=requested_scope,
+            workspace=workspace,
+            root=root,
+            mode=mode,
+            budget=budget,
+        )
+    return _digest_exact_source(
+        engine,
+        evidence_ref=normalized,
+        requested_scope=requested_scope,
+        workspace=workspace,
+        root=root,
+        mode=mode,
+        budget=budget,
+    )
+
+
 def _catalog_response(
     engine,
     *,
@@ -407,6 +926,15 @@ def apply(engine) -> None:
         "normalize_scope",
         "ORIENTATION_MAP_MIN_MAX_BYTES",
         "ORIENTATION_MAP_MAX_MAX_BYTES",
+        "connect_db",
+        "_purge_invalid_indexed_sources",
+        "_refresh_native_canonical_sources",
+        "_ensure_historical_source_state",
+        "_indexed_source_is_valid",
+        "_canonical_source_version",
+        "_source_version",
+        "paths",
+        "read_session_digest",
     )
     missing = [name for name in required if not hasattr(engine, name)]
     if missing:
@@ -424,6 +952,7 @@ def apply(engine) -> None:
         workspace: Optional[str] = None,
         limit: int = DEFAULT_LIMIT,
         max_bytes: Optional[int] = None,
+        evidence_ref: Optional[Mapping[str, Any]] = None,
         root: Optional[Path] = None,
         mode: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -436,6 +965,21 @@ def apply(engine) -> None:
         )
         resolved_root = Path(root or engine.repository_root()).resolve()
         resolved_mode = mode or engine.detect_mode(resolved_root)
+
+        if depth_value == "source":
+            return _exact_source_response(
+                engine,
+                evidence_ref=evidence_ref,
+                query=query_value,
+                requested_scope=scope,
+                workspace=workspace,
+                root=resolved_root,
+                mode=resolved_mode,
+                budget=budget,
+            )
+
+        if evidence_ref is not None:
+            raise ValueError("evidence_ref is only valid for source depth")
 
         if depth_value == "catalog":
             return _catalog_response(
@@ -489,7 +1033,7 @@ def apply(engine) -> None:
             "next_depth": "detail" if depth_value == "summary" and items else (
                 "source" if depth_value == "detail" and deeper else None
             ),
-            "source_depth_available": False,
+            "source_depth_available": bool(depth_value == "detail" and deeper),
             "candidate_counts": {
                 "session_digests": len(digests),
                 "indexed_records": len(records),
