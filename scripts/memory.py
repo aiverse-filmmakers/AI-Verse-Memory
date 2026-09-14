@@ -90,8 +90,8 @@ _AUTO_ADMISSION_FIELDS = {
     "external_authority",
 }
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)\\b(?:password|passwd|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|private[_ -]?key)\\s*[:=]\\s*[^\\s,;]{6,}"),
-    re.compile(r"\\bsk-[A-Za-z0-9_-]{20,}\\b"),
+    re.compile(r"(?i)\b(?:password|passwd|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|private[_ -]?key)\s*[:=]\s*[^\s,;]{6,}"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 )
 
