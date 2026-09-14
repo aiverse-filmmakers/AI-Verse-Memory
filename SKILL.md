@@ -113,6 +113,16 @@ Use `progressive_recall` when the caller wants a bounded retrieval layer instead
 
 Do not treat summary excerpts or digest summaries as exact evidence. Preserve the returned scope and evidence metadata when requesting deeper retrieval.
 
+## Relationship projection
+
+Use `list_relationships` only for explicit provenance/navigation questions such as supersession chains or which digest/source evidence produced a Memory record.
+
+- Edges are disposable derived SQLite state, not facts.
+- Supported D1 relationships are deterministic `supersedes`, `superseded_by`, `derived_from`, and `same_session`.
+- Relationship evidence contains identifiers, canonical versions, and explicit provenance fields, never Memory body text.
+- Do not infer a relationship from similar wording, shared tags, or model judgment.
+- Do not perform automatic neighbor expansion from these edges in D1. Ordinary/progressive recall remains the retrieval authority until D2 proves a bounded traversal is useful.
+
 ## Supersession
 
 When historical meaning changes, supersede the old atomic record instead of rewriting chronology.
