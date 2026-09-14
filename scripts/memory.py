@@ -304,6 +304,11 @@ def capture_candidate(
     }
 
 
+
+_promotion = _load_sibling("_aiverse_memory_session_promotion", "session_promotion.py")
+_promotion.apply(_engine, capture_candidate)
+promote_session_digest = _engine.promote_session_digest
+
 def _fts_query_terms(query: str) -> List[str]:
     """Return a bounded set of unique terms without discarding late task signals.
 
