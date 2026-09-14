@@ -24,6 +24,7 @@ jobs:
           python -m py_compile scripts/memory_engine.py
           python -m py_compile scripts/public_beta.py
           python -m py_compile scripts/session_digest.py
+          python -m py_compile scripts/session_digest_index.py
           python -m py_compile scripts/component.py
           python -m py_compile scripts/install.py
           python -m py_compile scripts/install_engine.py
