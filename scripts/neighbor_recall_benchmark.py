@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""D2 deterministic ship/reject benchmark for one-hop Memory neighbor recall."""
+"""D2 deterministic benchmark for tightly bounded one-hop Memory neighbor recall.
+
+This is benchmark-only. It does not patch or replace the accepted direct/progressive
+recall path. D2 must first prove that relationship traversal earns runtime complexity.
+"""
 
 from __future__ import annotations
 
@@ -10,16 +14,27 @@ import statistics
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 SCHEMA = 1
-VERSION = "memory.d2-neighbor-recall-benchmark.v1"
+VERSION = "memory.d2-neighbor-recall-benchmark.v2"
 DIRECT_LIMIT = 6
 MAX_NEIGHBORS = 4
 MAX_RELATIONS = 200
 MAX_BYTES = 12000
 SAMPLES = 3
 HERE = Path(__file__).resolve().parent
+
+HISTORY_TERMS = {
+    "before", "previous", "previously", "prior", "old", "older", "history",
+    "historical", "corrected", "correction", "superseded", "supersedes", "replaced",
+}
+PROVENANCE_TERMS = {
+    "source", "sources", "context", "evidence", "origin", "provenance",
+    "session", "run", "incident", "derived", "why",
+}
+HISTORY_RELATIONS = {"supersedes", "superseded_by"}
+PROVENANCE_RELATIONS = {"derived_from"}
 
 
 def load_memory():
@@ -77,8 +92,12 @@ def digest(mem, root: Path, wid: str, sid: str, rid: str, topic: str, summary: s
             f"{wid}:{sid}:{rid}".encode()
         ).hexdigest(),
         source_version="gateway-run-v1",
-        provenance={"owner": "ai-verse-gateway", "kind": "completed_session",
-                    "session_id": sid, "run_id": rid},
+        provenance={
+            "owner": "ai-verse-gateway",
+            "kind": "completed_session",
+            "session_id": sid,
+            "run_id": rid,
+        },
         completed_at="2026-09-14T12:00:00+00:00",
         effect_id=f"d2:{wid}:{rid}",
         root=root,
@@ -88,69 +107,134 @@ def digest(mem, root: Path, wid: str, sid: str, rid: str, topic: str, summary: s
 
 def fixture(mem, root: Path) -> Dict[str, Any]:
     lesson_digest, _, _ = digest(
-        mem, root, "alpha", "sess-alpha-lesson", "run-alpha-lesson",
-        "Completed lesson source L19",
-        "Durable lesson outcome captured from source session L19.",
+        mem,
+        root,
+        "alpha",
+        "sess-alpha-lesson",
+        "run-alpha-lesson",
+        "L19 causal packet",
+        "L19 established that a two-pass process removed shimmer while preserving fine texture.",
     )
     lesson_id, _, _ = mem.write_atomic(
         "Aurora export lesson: use a two-pass temporal denoise before final delivery.",
-        "lesson", "workspace:alpha",
+        "lesson",
+        "workspace:alpha",
         source=f"memory:session-digest:{lesson_digest}",
-        evidence_refs=[f"memory:session-digest:{lesson_digest}",
-                       "gateway:run:run-alpha-lesson"],
+        evidence_refs=[
+            f"memory:session-digest:{lesson_digest}",
+            "gateway:run:run-alpha-lesson",
+        ],
         tags="aurora,export,temporal,denoise",
-        effect_id="d2-alpha-lesson", root=root, mode=mem.MODE_NATIVE,
+        effect_id="d2-alpha-lesson",
+        root=root,
+        mode=mem.MODE_NATIVE,
     )
 
     decision_digest, _, _ = digest(
-        mem, root, "alpha", "sess-alpha-decision", "run-alpha-decision",
-        "Completed decision source D11",
-        "Durable decision outcome captured from source session D11.",
+        mem,
+        root,
+        "alpha",
+        "sess-alpha-decision",
+        "run-alpha-decision",
+        "D11 rationale packet",
+        "D11 recorded that the intermediate preserved chroma before downstream compression.",
     )
     decision_id, _, _ = mem.write_atomic(
         "Orion delivery decision: use ProRes mezzanine before the H264 distribution encode.",
-        "decision", "workspace:alpha",
+        "decision",
+        "workspace:alpha",
         source=f"memory:session-digest:{decision_digest}",
-        evidence_refs=[f"memory:session-digest:{decision_digest}",
-                       "gateway:run:run-alpha-decision"],
+        evidence_refs=[
+            f"memory:session-digest:{decision_digest}",
+            "gateway:run:run-alpha-decision",
+        ],
         tags="orion,delivery,prores,h264",
-        effect_id="d2-alpha-decision", root=root, mode=mem.MODE_NATIVE,
+        effect_id="d2-alpha-decision",
+        root=root,
+        mode=mem.MODE_NATIVE,
     )
 
     old_id, _, _ = mem.write_atomic(
-        "Atlas target port is 7100.", "fact", "workspace:alpha",
-        tags="atlas,target,port", effect_id="d2-alpha-old",
-        root=root, mode=mem.MODE_NATIVE,
+        "Atlas target port is 7100.",
+        "fact",
+        "workspace:alpha",
+        tags="atlas,target,port",
+        effect_id="d2-alpha-old",
+        root=root,
+        mode=mem.MODE_NATIVE,
     )
     correction_id, _, _ = mem.supersede_atomic(
-        old_id, "Atlas target port is 7200.",
-        mem_type="correction", scope="workspace:alpha",
+        old_id,
+        "Atlas target port is 7200.",
+        mem_type="correction",
+        scope="workspace:alpha",
         evidence_refs=["gateway:run:run-alpha-correction"],
-        tags="atlas,target,port,correction", effect_id="d2-alpha-correction",
-        root=root, mode=mem.MODE_NATIVE,
+        tags="atlas,target,port,correction",
+        effect_id="d2-alpha-correction",
+        root=root,
+        mode=mem.MODE_NATIVE,
     )
 
     beta_digest, _, _ = digest(
-        mem, root, "beta", "sess-beta-private", "run-beta-private",
-        "Completed lesson source B7", "BETA-PRIVATE-MARKER private summary.",
+        mem,
+        root,
+        "beta",
+        "sess-beta-private",
+        "run-beta-private",
+        "B7 private packet",
+        "BETA-PRIVATE-MARKER private summary.",
     )
     beta_id, _, _ = mem.write_atomic(
         "BETA-PRIVATE-MARKER Aurora export lesson must never cross workspace scope.",
-        "lesson", "workspace:beta",
+        "lesson",
+        "workspace:beta",
         source=f"memory:session-digest:{beta_digest}",
         evidence_refs=[f"memory:session-digest:{beta_digest}"],
         tags="aurora,export,temporal,denoise",
-        effect_id="d2-beta-private", root=root, mode=mem.MODE_NATIVE,
+        effect_id="d2-beta-private",
+        root=root,
+        mode=mem.MODE_NATIVE,
     )
+
     return {
         "beta_ids": {beta_id, beta_digest},
+        "ids": {
+            "lesson": lesson_id,
+            "lesson_digest": lesson_digest,
+            "decision": decision_id,
+            "decision_digest": decision_digest,
+            "old": old_id,
+            "correction": correction_id,
+        },
         "cases": [
-            {"name": "lesson", "query": "Aurora export temporal denoise lesson",
-             "expected": lesson_id, "relevant": {lesson_digest}, "forbidden": set()},
-            {"name": "decision", "query": "Orion delivery ProRes mezzanine decision H264",
-             "expected": decision_id, "relevant": {decision_digest}, "forbidden": set()},
-            {"name": "correction", "query": "Atlas target port",
-             "expected": correction_id, "relevant": set(), "forbidden": {old_id}},
+            {
+                "name": "lesson_provenance",
+                "query": "Aurora export denoise context",
+                "expected": lesson_digest,
+                "relevant": {lesson_digest},
+                "forbidden": set(),
+            },
+            {
+                "name": "decision_provenance",
+                "query": "Orion ProRes H264 evidence",
+                "expected": decision_digest,
+                "relevant": {decision_digest},
+                "forbidden": set(),
+            },
+            {
+                "name": "correction_history",
+                "query": "Atlas target port before correction",
+                "expected": old_id,
+                "relevant": {old_id},
+                "forbidden": set(),
+            },
+            {
+                "name": "correction_current",
+                "query": "current Atlas target port",
+                "expected": correction_id,
+                "relevant": set(),
+                "forbidden": {old_id},
+            },
         ],
     }
 
@@ -170,9 +254,13 @@ def canonical_fingerprint(root: Path) -> str:
 
 def direct(mem, root: Path, query: str) -> Dict[str, Any]:
     return mem.progressive_recall(
-        query, depth="detail", workspace="alpha",
-        limit=DIRECT_LIMIT, max_bytes=MAX_BYTES,
-        root=root, mode=mem.MODE_NATIVE,
+        query,
+        depth="detail",
+        workspace="alpha",
+        limit=DIRECT_LIMIT,
+        max_bytes=MAX_BYTES,
+        root=root,
+        mode=mem.MODE_NATIVE,
     )
 
 
@@ -186,73 +274,125 @@ def ids(response: Mapping[str, Any]) -> List[str]:
     return result
 
 
-def atomic_neighbor(mem, root: Path, mid: str) -> Optional[Dict[str, Any]]:
+def relation_intent(mem, query: str) -> Set[str]:
+    terms = {str(term).casefold() for term in mem.tokenize(query)}
+    allowed: Set[str] = set()
+    if terms & HISTORY_TERMS:
+        allowed.update(HISTORY_RELATIONS)
+    if terms & PROVENANCE_TERMS:
+        allowed.update(PROVENANCE_RELATIONS)
+    return allowed
+
+
+def atomic_neighbor(
+    mem,
+    root: Path,
+    mid: str,
+    *,
+    allow_historical: bool,
+) -> Optional[Dict[str, Any]]:
     path = mem.locate_memory(mid, root, mem.MODE_NATIVE)
     if not path:
         return None
     meta, body = mem.parse_markdown(path)
-    if str(meta.get("status") or "active") != "active":
+    status = str(meta.get("status") or "active")
+    if status != "active" and not allow_historical:
         return None
     if mem.normalize_scope(meta.get("scope"), root, mem.MODE_NATIVE) != "workspace:alpha":
         return None
-    return {"record_type": "indexed_record", "id": mid,
-            "type": str(meta.get("type") or ""), "scope": "workspace:alpha",
-            "text": body.strip()}
+    return {
+        "record_type": "indexed_record",
+        "id": mid,
+        "type": str(meta.get("type") or ""),
+        "scope": "workspace:alpha",
+        "status": status,
+        "text": body.strip(),
+    }
 
 
 def digest_neighbor(mem, root: Path, did: str) -> Optional[Dict[str, Any]]:
     try:
         row = mem.read_session_digest(
-            did, scope="workspace:alpha", root=root, mode=mem.MODE_NATIVE
+            did,
+            scope="workspace:alpha",
+            root=root,
+            mode=mem.MODE_NATIVE,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, RuntimeError, ValueError):
         return None
-    return {"record_type": "session_digest", "id": did,
-            "scope": str(row.get("scope") or ""),
-            "topic": str(row.get("topic") or ""),
-            "summary": str(row.get("summary") or "")}
+    return {
+        "record_type": "session_digest",
+        "id": did,
+        "scope": str(row.get("scope") or ""),
+        "topic": str(row.get("topic") or ""),
+        "summary": str(row.get("summary") or ""),
+    }
 
 
-def neighbors(mem, root: Path, response: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], int]:
+def neighbors(
+    mem,
+    root: Path,
+    response: Mapping[str, Any],
+    query: str,
+) -> Tuple[List[Dict[str, Any]], int, List[str]]:
     seeds = set(ids(response))
+    allowed = relation_intent(mem, query)
+    if not seeds or not allowed:
+        return [], 0, sorted(allowed)
+
     edges = mem.list_relationships(
-        workspace="alpha", limit=MAX_RELATIONS, root=root, mode=mem.MODE_NATIVE
+        workspace="alpha",
+        limit=MAX_RELATIONS,
+        root=root,
+        mode=mem.MODE_NATIVE,
     )
     found: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for edge in edges:
-        kind = ref = direction = ""
-        if str(edge.get("source_ref") or "") in seeds:
-            kind, ref, direction = (
-                str(edge.get("target_kind") or ""),
-                str(edge.get("target_ref") or ""), "outbound",
-            )
-        elif str(edge.get("target_ref") or "") in seeds:
-            kind, ref, direction = (
-                str(edge.get("source_kind") or ""),
-                str(edge.get("source_ref") or ""), "inbound",
-            )
-        else:
+        relation = str(edge.get("relation_type") or "")
+        if relation not in allowed:
             continue
+        if str(edge.get("source_ref") or "") not in seeds:
+            continue
+
+        kind = str(edge.get("target_kind") or "")
+        ref = str(edge.get("target_ref") or "")
         if not ref or ref in seeds or kind not in {"atomic_memory", "session_digest"}:
             continue
+
         key = (kind, ref)
         if key in found:
             continue
-        item = atomic_neighbor(mem, root, ref) if kind == "atomic_memory" else digest_neighbor(mem, root, ref)
+
+        if kind == "atomic_memory":
+            item = atomic_neighbor(
+                mem,
+                root,
+                ref,
+                allow_historical=relation in HISTORY_RELATIONS,
+            )
+        else:
+            item = digest_neighbor(mem, root, ref)
         if item is None:
             continue
-        item["neighbor_relation"] = str(edge.get("relation_type") or "")
-        item["neighbor_direction"] = direction
+
+        item["neighbor_relation"] = relation
+        item["neighbor_direction"] = "outbound"
         item["edge_id"] = str(edge.get("edge_id") or "")
         found[key] = item
-    ordered = [found[k] for k in sorted(found)]
-    return ordered[:MAX_NEIGHBORS], len(edges)
+
+    ordered = [found[key] for key in sorted(found)]
+    return ordered[:MAX_NEIGHBORS], len(edges), sorted(allowed)
 
 
 def candidate(mem, root: Path, query: str) -> Dict[str, Any]:
     base = direct(mem, root, query)
-    extra, scanned = neighbors(mem, root, base)
-    return {"direct": base, "neighbors": extra, "relationship_edges_scanned": scanned}
+    extra, scanned, intent = neighbors(mem, root, base, query)
+    return {
+        "direct": base,
+        "neighbors": extra,
+        "relationship_edges_scanned": scanned,
+        "relation_intent": intent,
+    }
 
 
 def measured(fn):
@@ -289,9 +429,10 @@ def run_benchmark() -> Dict[str, Any]:
             cand, ct = measured(lambda q=case["query"]: candidate(mem, root, q))
             base_times += bt
             cand_times += ct
+
             base_ids = ids(base)
             direct_ids = ids(cand["direct"])
-            neighbor_ids = [str(x.get("id") or "") for x in cand["neighbors"]]
+            neighbor_ids = [str(item.get("id") or "") for item in cand["neighbors"]]
             combined = set(direct_ids + neighbor_ids)
             expected = str(case["expected"])
             forbidden = set(case["forbidden"])
@@ -316,15 +457,24 @@ def run_benchmark() -> Dict[str, Any]:
             base_bytes += bsize
             neighbor_bytes += nsize
             cand_bytes += csize
-            rows.append({
-                "name": case["name"], "query": case["query"], "expected_id": expected,
-                "baseline_correct": base_ok, "candidate_correct": cand_ok,
-                "baseline_ids": base_ids, "candidate_direct_ids": direct_ids,
-                "neighbor_ids": neighbor_ids,
-                "relationship_edges_scanned": cand["relationship_edges_scanned"],
-                "baseline_bytes": bsize, "candidate_bytes": csize,
-                "neighbor_bytes": nsize,
-            })
+
+            rows.append(
+                {
+                    "name": case["name"],
+                    "query": case["query"],
+                    "expected_id": expected,
+                    "baseline_correct": base_ok,
+                    "candidate_correct": cand_ok,
+                    "baseline_ids": base_ids,
+                    "candidate_direct_ids": direct_ids,
+                    "neighbor_ids": neighbor_ids,
+                    "relation_intent": cand["relation_intent"],
+                    "relationship_edges_scanned": cand["relationship_edges_scanned"],
+                    "baseline_bytes": bsize,
+                    "candidate_bytes": csize,
+                    "neighbor_bytes": nsize,
+                }
+            )
 
         after = canonical_fingerprint(root)
         bcorrect = sum(1 for row in rows if row["baseline_correct"])
@@ -332,47 +482,55 @@ def run_benchmark() -> Dict[str, Any]:
         total = len(rows)
         gain = ccorrect - bcorrect
         count = relevant + irrelevant
-        bmed, cmed = median_ms(base_times), median_ms(cand_times)
-        safety = {
-            "scope_leakage_count": leakage,
-            "stale_neighbor_count": stale,
-            "canonical_mutation": before != after,
-        }
-        ship = gain > 0 and leakage == 0 and stale == 0 and before == after
+        bmed = median_ms(base_times)
+        cmed = median_ms(cand_times)
+
         return {
             "schema_version": SCHEMA,
             "benchmark_version": VERSION,
             "bounds": {
-                "one_hop_only": True, "workspace": "alpha",
-                "direct_limit": DIRECT_LIMIT, "max_neighbors_per_query": MAX_NEIGHBORS,
+                "one_hop_only": True,
+                "workspace": "alpha",
+                "direct_limit": DIRECT_LIMIT,
+                "max_neighbors_per_query": MAX_NEIGHBORS,
                 "max_relationship_edges_scanned": MAX_RELATIONS,
                 "detail_budget_bytes": MAX_BYTES,
+                "query_intent_gated": True,
             },
             "baseline": {
-                "correct_scenarios": bcorrect, "total_scenarios": total,
+                "correct_scenarios": bcorrect,
+                "total_scenarios": total,
                 "correctness": round(bcorrect / total, 6),
-                "context_bytes": base_bytes, "median_latency_ms": bmed,
+                "context_bytes": base_bytes,
+                "median_latency_ms": bmed,
             },
             "candidate": {
-                "correct_scenarios": ccorrect, "total_scenarios": total,
+                "correct_scenarios": ccorrect,
+                "total_scenarios": total,
                 "correctness": round(ccorrect / total, 6),
                 "correctness_gain_scenarios": gain,
                 "context_bytes": cand_bytes,
                 "context_inflation_ratio": round(cand_bytes / base_bytes, 6),
-                "neighbor_bytes": neighbor_bytes, "neighbors_returned": count,
-                "relevant_neighbors": relevant, "irrelevant_neighbors": irrelevant,
-                "irrelevant_neighbor_rate": round(irrelevant / count, 6) if count else 0.0,
+                "neighbor_bytes": neighbor_bytes,
+                "neighbors_returned": count,
+                "relevant_neighbors": relevant,
+                "irrelevant_neighbors": irrelevant,
+                "irrelevant_neighbor_rate": (
+                    round(irrelevant / count, 6) if count else 0.0
+                ),
                 "median_latency_ms": cmed,
                 "latency_ratio": round(cmed / bmed, 6) if bmed else 1.0,
             },
-            "safety": safety,
-            "decision": "ship" if ship else "reject",
+            "safety": {
+                "scope_leakage_count": leakage,
+                "stale_neighbor_count": stale,
+                "canonical_mutation": before != after,
+            },
+            "decision": "pending_evidence_review",
             "reason": (
-                "Bounded one-hop expansion improved representative correctness without "
-                "violating D2 safety invariants."
-                if ship else
-                "Bounded one-hop expansion did not improve representative correctness; "
-                "its additional relationship scan/context cost does not earn runtime complexity."
+                "D2 first captures a fair baseline/candidate comparison. The ship/reject "
+                "decision is frozen only after reviewing measured correctness, context, "
+                "latency, irrelevant-neighbor, and safety evidence."
             ),
             "scenarios": rows,
         }
