@@ -136,6 +136,23 @@ Orientation output is hard-bounded by serialized UTF-8 bytes. Callers may supply
 
 `get_orientation_map_diagnostics` returns content-free operational facts only: projection bytes, a declared byte-based token estimate, budget, truncation flag, source counts, returned-entry counts, visible-scope count, fingerprint, and freshness. It does not expose chain-of-thought or canonical source text.
 
+## Progressive recall v1
+
+Memory exposes one additive versioned progressive retrieval contract: `memory.progressive-recall.v1`.
+
+The depth ladder is owner-preserving:
+
+1. `catalog` reuses the rebuildable B2 orientation projection.
+2. `summary` combines existing targeted session-digest recall with compact excerpts from existing query-bound indexed recall.
+3. `detail` returns bounded targeted digest/index detail and evidence pointers.
+4. `source` is the next exact-evidence depth but is reserved until C2 implements source containment/freshness revalidation.
+
+Legacy `recall()` is unchanged. Progressive recall calls existing `recall()`, `recall_session_digests()`, and `get_orientation_map()` rather than introducing a second ranking/index authority.
+
+Summary/detail require a non-empty query and stay within normal operator/workspace visibility. The v1 surface does not expose all-workspace retrieval. Item count is capped and serialized UTF-8 response bytes are hard-bounded by caller configuration. Budget pressure may omit bounded content while retaining record identity/evidence pointers; it never widens scope.
+
+Every summary/detail item states whether deeper evidence exists and carries the evidence metadata available at that layer. These layers are not exact-source truth. Exact-sensitive answers must descend to the C2 source depth once available.
+
 ## Supersession
 
 Changed historical Memory preserves chronology. The replacement points to the old memory, the old memory becomes superseded, and a recovery journal protects the multi-file effect from interruption.
