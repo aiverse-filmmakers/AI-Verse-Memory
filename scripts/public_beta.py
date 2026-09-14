@@ -10,10 +10,12 @@ snapshot-bound legacy adoption.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -998,3 +1000,19 @@ def apply(engine) -> None:
     engine.public_beta_write_component_state = lambda root, mode, **changes: write_component_state(
         engine, Path(root), mode, **changes
     )
+
+    # Session digests are an additive Memory-owned extension. Load them here,
+    # after hardening helpers are attached, so the compatibility entrypoint can
+    # evolve independently and concurrent runtime work does not need to edit it.
+    digest_path = Path(__file__).resolve().parent / "session_digest.py"
+    if digest_path.exists():
+        module_name = "_aiverse_memory_session_digest"
+        module = sys.modules.get(module_name)
+        if module is None:
+            spec = importlib.util.spec_from_file_location(module_name, digest_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Could not load session digest extension: {digest_path}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+        module.apply(engine)
