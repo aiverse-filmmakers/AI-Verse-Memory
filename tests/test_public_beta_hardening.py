@@ -144,6 +144,28 @@ class PublicBetaHardeningTests(unittest.TestCase):
             ids = {row["id"] for row in rows}
             self.assertTrue({item[0] for item in results}.issubset(ids))
 
+    def test_mutation_wait_timeout_tracks_queue_progress_not_total_queue_age(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            original_wait = mem._public_beta.LOCK_WAIT_SECONDS
+            mem._public_beta.LOCK_WAIT_SECONDS = 0.12
+            import threading
+            barrier = threading.Barrier(3)
+
+            def hold(index: int):
+                barrier.wait()
+                with mem.public_beta_mutation_lock(root, mem.MODE_NATIVE):
+                    time.sleep(0.08)
+                    return index
+
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+                    results = list(pool.map(hold, range(3)))
+            finally:
+                mem._public_beta.LOCK_WAIT_SECONDS = original_wait
+
+            self.assertEqual(sorted(results), [0, 1, 2])
+
     def test_stale_mutation_lock_is_recovered(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._native_root(Path(tmp))
