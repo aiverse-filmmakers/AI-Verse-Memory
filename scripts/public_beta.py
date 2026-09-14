@@ -634,15 +634,17 @@ def _patched_supersede_atomic(engine, original_rebuild):
                     raise RuntimeError("Memory supersession effect is not reflected in canonical history")
                 return existing_id, existing_path, False
 
-            new_path = _safe_atomic_path(engine, new_id, engine.now_iso(), normalized_scope, root, mode)
+            existing_new_path = engine.locate_memory(new_id, root, mode)
 
             # Recover a completed two-file mutation whose receipt was lost after
-            # the canonical writes but before receipt persistence.
+            # the canonical writes but before receipt persistence. locate_memory
+            # avoids assuming the recovery happens on the same calendar date.
             if (
                 old_meta.get("status") == "superseded"
                 and old_meta.get("superseded_by") == new_id
-                and new_path.exists()
+                and existing_new_path is not None
             ):
+                new_path = existing_new_path
                 new_meta, new_body = engine.parse_markdown(new_path)
                 stored_refs = []
                 if new_meta.get("evidence_refs"):
@@ -674,7 +676,7 @@ def _patched_supersede_atomic(engine, original_rebuild):
                 raise RuntimeError(
                     f"Memory record {supersedes} is not active and cannot be superseded again"
                 )
-            if new_path.exists():
+            if existing_new_path is not None:
                 raise RuntimeError(
                     f"Correction destination already exists without matching supersession evidence: {new_id}"
                 )
