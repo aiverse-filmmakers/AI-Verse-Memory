@@ -133,6 +133,19 @@ The map is stored only in the disposable SQLite index and rebuilt from authorita
 
 `get_orientation_map_diagnostics` reports projection bytes, a transparent byte-based token estimate, configured budget, truncation state, source counts, visible-scope count, and freshness. It never exposes hidden reasoning or canonical Memory/source content. Workspace orientation follows normal Memory visibility: the bound workspace plus operator context, never an unrelated workspace.
 
+### Progressive recall v1
+
+The module API `progressive_recall` adds one versioned retrieval surface without changing legacy `recall()`.
+
+- `depth="catalog"` reuses the B2 orientation map and does not require a query.
+- `depth="summary"` uses existing session-digest recall plus compact query-bound excerpts from existing indexed Memory/current-source recall.
+- `depth="detail"` returns bounded targeted digest/index detail with provenance and evidence pointers.
+- `depth="source"` is intentionally reserved for the C2 exact-source extension. C1 detail may report `next_depth="source"` and `deeper_evidence_available=true`, but `source_depth_available` remains false until exact-source validation exists.
+
+The API version is `memory.progressive-recall.v1`. Summary/detail require a non-empty query, use existing Memory scope rules, and never enable all-workspace retrieval. Responses are hard-bounded by `max_bytes` or `AI_VERSE_PROGRESSIVE_RECALL_MAX_BYTES` (default 16384; supported 4096-65536) and by at most 20 returned items.
+
+Summary/detail output is navigation or bounded indexed detail, not exact-source evidence. Evidence pointers carry canonical/derived path and version metadata so callers can decide whether a C2 source descent is required.
+
 ## Update, disable, enable, uninstall
 
 Update without changing enablement or authority:
