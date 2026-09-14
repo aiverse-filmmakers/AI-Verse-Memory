@@ -598,3 +598,16 @@ def apply(engine) -> None:
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
         module.apply(engine, sys.modules[__name__])
+
+    orientation_path = Path(__file__).resolve().parent / "orientation_map.py"
+    if orientation_path.exists():
+        module_name = "_aiverse_memory_orientation_map"
+        orientation = sys.modules.get(module_name)
+        if orientation is None:
+            spec = importlib.util.spec_from_file_location(module_name, orientation_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Could not load orientation map extension: {orientation_path}")
+            orientation = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = orientation
+            spec.loader.exec_module(orientation)
+        orientation.apply(engine)

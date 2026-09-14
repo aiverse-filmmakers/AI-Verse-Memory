@@ -123,6 +123,12 @@ Session digests can be used as bounded evidence for durable atomic Memory throug
 
 Promotion is capped per digest, locked to the digest's scope, and accepts only evidence references covered by that digest. Safe candidates still route through `capture_candidate`. Explicit corrections must identify the older Memory record they supersede; Memory then performs a retry-safe transactional supersession so normal recall sees the correction while historical recall preserves the stale record.
 
+### Tiny orientation map
+
+The module API `get_orientation_map` builds a small per-scope catalog before deeper recall. It aggregates counts, Memory types, current-source routes, explicit tags/topics, and recent session-digest pointers without copying canonical text or digest summaries.
+
+The map is stored only in the disposable SQLite index and rebuilt from authoritative Memory/source/digest evidence on read. Deleting the projection or shared derived database does not lose truth. Workspace orientation follows normal Memory visibility: the bound workspace plus operator context, never an unrelated workspace.
+
 ## Update, disable, enable, uninstall
 
 Update without changing enablement or authority:

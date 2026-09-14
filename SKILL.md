@@ -92,6 +92,12 @@ For a completed session digest, use `promote_session_digest` only with a bounded
 
 Corrections must name the historical Memory ID they supersede. Do not create an unbound correction or overwrite the old Markdown record.
 
+## Orientation before deep recall
+
+Use `get_orientation_map` when a caller needs a tiny scoped catalog before targeted recall. The map is derived SQLite state only. It may expose counts, types, source routes, explicit tags/topics, and recent digest pointers, but never full atomic text, current-source bodies, digest summaries, or raw transcripts.
+
+Treat the map as navigation, not evidence. Deeper Memory/digest/source reads remain authoritative.
+
 ## Supersession
 
 When historical meaning changes, supersede the old atomic record instead of rewriting chronology.
