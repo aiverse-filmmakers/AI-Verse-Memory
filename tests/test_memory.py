@@ -420,7 +420,7 @@ class NativeMemoryTests(unittest.TestCase):
                 self.assertFalse(result["changed"])
 
         rows = mem.recall(
-            "abcdefghijklmnopqrstuvwxyz1234567890 concise review notes",
+            "abcdefghijklmnopqrstuvwxyz1234567890",
             workspace="alpha",
             include_history=True,
             root=self.root,
