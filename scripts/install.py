@@ -52,6 +52,7 @@ def source_copy(relative: str, destination: Path, source_dir):
         _original_source_copy("scripts/session_digest_index.py", destination.parent / "session_digest_index.py", source_dir)
         _original_source_copy("scripts/session_promotion.py", destination.parent / "session_promotion.py", source_dir)
         _original_source_copy("scripts/orientation_map.py", destination.parent / "orientation_map.py", source_dir)
+        _original_source_copy("scripts/progressive_recall.py", destination.parent / "progressive_recall.py", source_dir)
     elif relative == "scripts/component.py":
         _original_source_copy("scripts/install.py", destination.parent / "install.py", source_dir)
         _original_source_copy("scripts/install_engine.py", destination.parent / "install_engine.py", source_dir)
