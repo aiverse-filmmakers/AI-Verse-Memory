@@ -140,7 +140,7 @@ The module API `progressive_recall` adds one versioned retrieval surface without
 - `depth="catalog"` reuses the B2 orientation map and does not require a query.
 - `depth="summary"` uses existing session-digest recall plus compact query-bound excerpts from existing indexed Memory/current-source recall.
 - `depth="detail"` returns bounded targeted digest/index detail with provenance and evidence pointers.
-- `depth="source"` is intentionally reserved for the C2 exact-source extension. C1 detail may report `next_depth="source"` and `deeper_evidence_available=true`, but `source_depth_available` remains false until exact-source validation exists.
+- `depth="source"` performs C2 exact-source descent through the same API. Pass the prior detail item as `evidence_ref`; Memory revalidates scope, containment, identity, and current source version before returning canonical text.
 
 The API version is `memory.progressive-recall.v1`. Summary/detail require a non-empty query, use existing Memory scope rules, and never enable all-workspace retrieval. Responses are hard-bounded by `max_bytes` or `AI_VERSE_PROGRESSIVE_RECALL_MAX_BYTES` (default 16384; supported 4096-65536) and by at most 20 returned items.
 
