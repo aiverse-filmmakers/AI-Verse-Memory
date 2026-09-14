@@ -148,14 +148,14 @@ class PublicBetaHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._native_root(Path(tmp))
             original_wait = mem._public_beta.LOCK_WAIT_SECONDS
-            mem._public_beta.LOCK_WAIT_SECONDS = 0.12
+            mem._public_beta.LOCK_WAIT_SECONDS = 0.30
             import threading
             barrier = threading.Barrier(3)
 
             def hold(index: int):
                 barrier.wait()
                 with mem.public_beta_mutation_lock(root, mem.MODE_NATIVE):
-                    time.sleep(0.08)
+                    time.sleep(0.20)
                     return index
 
             try:
