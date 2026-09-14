@@ -145,13 +145,17 @@ The depth ladder is owner-preserving:
 1. `catalog` reuses the rebuildable B2 orientation projection.
 2. `summary` combines existing targeted session-digest recall with compact excerpts from existing query-bound indexed recall.
 3. `detail` returns bounded targeted digest/index detail and evidence pointers.
-4. `source` is the next exact-evidence depth but is reserved until C2 implements source containment/freshness revalidation.
+4. `source` accepts a prior detail item as `evidence_ref` and revalidates exact source scope, containment, identity, and version before returning canonical text.
 
 Legacy `recall()` is unchanged. Progressive recall calls existing `recall()`, `recall_session_digests()`, and `get_orientation_map()` rather than introducing a second ranking/index authority.
 
 Summary/detail require a non-empty query and stay within normal operator/workspace visibility. The v1 surface does not expose all-workspace retrieval. Item count is capped and serialized UTF-8 response bytes are hard-bounded by caller configuration. Budget pressure may omit bounded content while retaining record identity/evidence pointers; it never widens scope.
 
-Every summary/detail item states whether deeper evidence exists and carries the evidence metadata available at that layer. These layers are not exact-source truth. Exact-sensitive answers must descend to the C2 source depth once available.
+Every summary/detail item states whether deeper evidence exists and carries the evidence metadata available at that layer. These layers are not exact-source truth.
+
+At source depth, indexed atomic/current-owner records are read only from the currently validated canonical path. The expected version from the detail pointer must match the source version computed at read time. Version drift returns `stale` without content; deletion or containment failure returns `unavailable` without content; scope/path/identity tampering is rejected. Large sources are returned as deterministic query-centered exact windows under the same byte budget, with line/character coverage and explicit truncation metadata.
+
+Session digests are deliberately different: the canonical digest file is itself a compact summary. After validating its canonical version and scope, source depth returns `external_source_required` plus bounded Gateway `source_refs` / coverage. It never upgrades the digest summary into original transcript evidence.
 
 ## Supersession
 

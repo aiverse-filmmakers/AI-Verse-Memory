@@ -239,7 +239,7 @@ class ProgressiveRecallTests(unittest.TestCase):
             )
             self.assertEqual(detail["depth"], "detail")
             self.assertEqual(detail["next_depth"], "source")
-            self.assertFalse(detail["source_depth_available"])
+            self.assertTrue(detail["source_depth_available"])
             self.assertTrue(detail["deeper_evidence_available"])
             self.assertLessEqual(detail["returned_items"], 6)
             self.assertLessEqual(stable_bytes(detail), 10000)
