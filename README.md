@@ -109,6 +109,14 @@ The same `--effect-id` with the same input returns the original effect. Reusing 
 
 Standalone uses the same engine commands through `.ai-verse-memory/memory.py`.
 
+## Automatic safe historical capture
+
+Owner-routed runtimes may call the Memory module's `capture_candidate` admission gate for high-confidence durable historical facts, preferences, entities, events, experiences, workflows, lessons, or corrections.
+
+The gate fails closed unless the caller explicitly proves the candidate is durable historical evidence and explicitly denies current-truth, secret, strategic, privacy-ambiguity, permission-expansion, and external-authority boundaries. Provenance source, evidence references, and a retry-safe `effect_id` are mandatory.
+
+This path reuses the existing canonical Memory writer. It does not persist every turn, duplicate current profile/context truth, or create another Memory store.
+
 ## Update, disable, enable, uninstall
 
 Update without changing enablement or authority:
