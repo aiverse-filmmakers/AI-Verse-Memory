@@ -127,7 +127,11 @@ Promotion is capped per digest, locked to the digest's scope, and accepts only e
 
 The module API `get_orientation_map` builds a small per-scope catalog before deeper recall. It aggregates counts, Memory types, current-source routes, explicit tags/topics, and recent session-digest pointers without copying canonical text or digest summaries.
 
-The map is stored only in the disposable SQLite index and rebuilt from authoritative Memory/source/digest evidence on read. Deleting the projection or shared derived database does not lose truth. Workspace orientation follows normal Memory visibility: the bound workspace plus operator context, never an unrelated workspace.
+The map is stored only in the disposable SQLite index and rebuilt from authoritative Memory/source/digest evidence on read. It carries a deterministic `source_fingerprint` over only the currently authorized atomic Memory, current-source versions, and session-digest versions. A source change therefore changes the fingerprint and the next read replaces any stale stored projection. Deleting the projection or shared derived database does not lose truth.
+
+`get_orientation_map(..., max_bytes=N)` enforces a hard serialized UTF-8 byte budget. The default is 8192 bytes and may be configured with `AI_VERSE_ORIENTATION_MAP_MAX_BYTES`; accepted values are 1024-65536. If pressure requires truncation, sample route paths, older recent-session pointers, lower-ranked topics, and finally route entries are removed deterministically while scope, source fingerprint, counts, Memory-type counts, and source-kind counts are preserved.
+
+`get_orientation_map_diagnostics` reports projection bytes, a transparent byte-based token estimate, configured budget, truncation state, source counts, visible-scope count, and freshness. It never exposes hidden reasoning or canonical Memory/source content. Workspace orientation follows normal Memory visibility: the bound workspace plus operator context, never an unrelated workspace.
 
 ## Update, disable, enable, uninstall
 
