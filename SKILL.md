@@ -88,6 +88,10 @@ The caller must explicitly prove durability/history and explicitly deny current-
 
 Do not use automatic capture for current state, constraints, decisions, credentials, strategic direction or uncertain/private material.
 
+For a completed session digest, use `promote_session_digest` only with a bounded set of explicit durable candidates. Promotion must stay in the digest's scope and use evidence already covered by the digest. The promotion layer still routes each candidate through `capture_candidate`.
+
+Corrections must name the historical Memory ID they supersede. Do not create an unbound correction or overwrite the old Markdown record.
+
 ## Supersession
 
 When historical meaning changes, supersede the old atomic record instead of rewriting chronology.
