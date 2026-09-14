@@ -9,8 +9,10 @@ has attached the canonical mutation/idempotency helpers.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
@@ -583,3 +585,16 @@ def apply(engine) -> None:
     engine.read_session_digest = _install_read(engine)
     engine.list_session_digests = _install_list(engine)
     engine.SESSION_DIGEST_SCHEMA = SESSION_DIGEST_SCHEMA
+
+    index_path = Path(__file__).resolve().parent / "session_digest_index.py"
+    if index_path.exists():
+        module_name = "_aiverse_memory_session_digest_index"
+        module = sys.modules.get(module_name)
+        if module is None:
+            spec = importlib.util.spec_from_file_location(module_name, index_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Could not load session digest index extension: {index_path}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+        module.apply(engine, sys.modules[__name__])

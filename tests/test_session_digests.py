@@ -299,5 +299,321 @@ class SessionDigestTests(unittest.TestCase):
                 self._write_alpha(root, summary="x" * 6001)
 
 
+class SessionDigestIndexTests(unittest.TestCase):
+    def _native_root(self, base: Path) -> Path:
+        root = base / "os"
+        root.mkdir()
+        (root / "AI-VERSE.yaml").write_text(
+            'schema_version: "2.0"\narchitecture: unified-workspace\n',
+            encoding="utf-8",
+        )
+        (root / "operator").mkdir()
+        for workspace in ("alpha", "beta"):
+            owner = root / "workspaces" / workspace
+            owner.mkdir(parents=True)
+            (owner / "WORKSPACE.yaml").write_text(
+                f"id: {workspace}\nname: {workspace.title()}\ntype: test\nstatus: active\npurpose: digest index tests\n",
+                encoding="utf-8",
+            )
+        return root
+
+    def _digest(
+        self,
+        root: Path,
+        *,
+        session_id: str,
+        run_id: str,
+        scope: str,
+        topic: str,
+        summary: str,
+        completed_at: str,
+        effect_id: str,
+    ):
+        return mem.write_session_digest(
+            session_id,
+            summary,
+            run_id=run_id,
+            scope=scope,
+            topic=topic,
+            significant_outcomes=[f"Outcome for {session_id}"],
+            unresolved_items=[f"Follow-up for {session_id}"],
+            source_refs=[f"gateway:session:{session_id}", f"gateway:run:{run_id}"],
+            source_coverage=[f"gateway:session:{session_id}:messages:1-10"],
+            source_fingerprint=f"sha256:{session_id}",
+            source_version="gateway-run-v1",
+            provenance={"owner": "ai-verse-gateway", "session": session_id},
+            completed_at=completed_at,
+            effect_id=effect_id,
+            root=root,
+            mode=mem.MODE_NATIVE,
+        )
+
+    def test_targeted_recall_ranks_relevant_recent_digests_without_cross_workspace_leakage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            older_id, _, _ = self._digest(
+                root,
+                session_id="sess-alpha-old",
+                run_id="run-alpha-old",
+                scope="workspace:alpha",
+                topic="Render pipeline review",
+                summary="The render pipeline used the legacy retry policy.",
+                completed_at="2026-01-10T10:00:00+00:00",
+                effect_id="digest-alpha-old",
+            )
+            newer_id, _, _ = self._digest(
+                root,
+                session_id="sess-alpha-new",
+                run_id="run-alpha-new",
+                scope="workspace:alpha",
+                topic="Render pipeline stabilization",
+                summary="The render pipeline stabilized after bounded retry changes.",
+                completed_at="2026-09-13T10:00:00+00:00",
+                effect_id="digest-alpha-new",
+            )
+            beta_id, _, _ = self._digest(
+                root,
+                session_id="sess-beta-private",
+                run_id="run-beta-private",
+                scope="workspace:beta",
+                topic="Render pipeline confidential beta",
+                summary="Beta uses a private render pipeline configuration.",
+                completed_at="2026-09-14T09:00:00+00:00",
+                effect_id="digest-beta-private",
+            )
+
+            rows = mem.recall_session_digests(
+                "render pipeline",
+                workspace="alpha",
+                limit=10,
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            ids = [row["id"] for row in rows]
+            self.assertIn(newer_id, ids)
+            self.assertIn(older_id, ids)
+            self.assertNotIn(beta_id, ids)
+            self.assertLess(ids.index(newer_id), ids.index(older_id))
+            self.assertTrue(all(row["scope"] != "workspace:beta" for row in rows))
+
+    def test_digest_index_rebuilds_losslessly_after_shared_db_deletion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            atomic_id, _, _ = mem.write_atomic(
+                "Alpha atomic memory must survive derived DB recreation.",
+                "fact",
+                "workspace:alpha",
+                source="unit-test",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            digest_id, _, _ = self._digest(
+                root,
+                session_id="sess-rebuild",
+                run_id="run-rebuild",
+                scope="workspace:alpha",
+                topic="Database rebuild evidence",
+                summary="Session digest remains canonical outside the disposable SQLite projection.",
+                completed_at="2026-09-14T10:00:00+00:00",
+                effect_id="digest-rebuild",
+            )
+
+            self.assertEqual(
+                mem.rebuild_session_digest_index(root=root, mode=mem.MODE_NATIVE),
+                1,
+            )
+            first = mem.recall_session_digests(
+                "disposable SQLite",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual([row["id"] for row in first], [digest_id])
+
+            db = mem.paths(root, mem.MODE_NATIVE)["db"]
+            db.unlink()
+            rebuilt = mem.rebuild_session_digest_index(root=root, mode=mem.MODE_NATIVE)
+            self.assertEqual(rebuilt, 1)
+
+            after = mem.recall_session_digests(
+                "disposable SQLite",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual([row["id"] for row in after], [digest_id])
+
+            legacy = mem.recall(
+                "atomic memory survive",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertTrue(any(row["id"] == atomic_id for row in legacy))
+
+    def test_missing_canonical_digest_is_purged_from_derived_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            digest_id, path, _ = self._digest(
+                root,
+                session_id="sess-delete",
+                run_id="run-delete",
+                scope="workspace:alpha",
+                topic="Deletion freshness",
+                summary="This digest should disappear when its canonical file disappears.",
+                completed_at="2026-09-14T10:00:00+00:00",
+                effect_id="digest-delete",
+            )
+            initial = mem.recall_session_digests(
+                "canonical file disappears",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual([row["id"] for row in initial], [digest_id])
+
+            path.unlink()
+            after = mem.recall_session_digests(
+                "canonical file disappears",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual(after, [])
+
+            import sqlite3
+
+            conn = sqlite3.connect(mem.paths(root, mem.MODE_NATIVE)["db"])
+            try:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM session_digest_items WHERE id=?",
+                    (digest_id,),
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(count, 0)
+
+    def test_changed_canonical_digest_refreshes_stale_derived_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            digest_id, path, _ = self._digest(
+                root,
+                session_id="sess-refresh",
+                run_id="run-refresh",
+                scope="workspace:alpha",
+                topic="Freshness refresh",
+                summary="Original lighthouse phrase should be indexed.",
+                completed_at="2026-09-14T10:00:00+00:00",
+                effect_id="digest-refresh",
+            )
+            first = mem.recall_session_digests(
+                "lighthouse",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual([row["id"] for row in first], [digest_id])
+
+            raw = path.read_text(encoding="utf-8")
+            path.write_text(
+                raw.replace(
+                    "Original lighthouse phrase should be indexed.",
+                    "Replacement observatory phrase should be indexed.",
+                ),
+                encoding="utf-8",
+            )
+
+            stale = mem.recall_session_digests(
+                "lighthouse",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            fresh = mem.recall_session_digests(
+                "observatory",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual(stale, [])
+            self.assertEqual([row["id"] for row in fresh], [digest_id])
+            self.assertIn("observatory", fresh[0]["summary"])
+
+    def test_legacy_recall_does_not_return_session_digest_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._native_root(Path(tmp))
+            mem.write_atomic(
+                "Zeppelin is an atomic historical fact.",
+                "fact",
+                "workspace:alpha",
+                source="unit-test",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            digest_id, _, _ = self._digest(
+                root,
+                session_id="sess-zeppelin",
+                run_id="run-zeppelin",
+                scope="workspace:alpha",
+                topic="Zeppelin session",
+                summary="Zeppelin also appears in a session digest.",
+                completed_at="2026-09-14T10:00:00+00:00",
+                effect_id="digest-zeppelin",
+            )
+            targeted = mem.recall_session_digests(
+                "zeppelin",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertEqual([row["id"] for row in targeted], [digest_id])
+
+            legacy = mem.recall(
+                "zeppelin",
+                workspace="alpha",
+                root=root,
+                mode=mem.MODE_NATIVE,
+            )
+            self.assertTrue(legacy)
+            self.assertTrue(all(row["kind"] != "session_digest" for row in legacy))
+            self.assertFalse(any(row["id"] == digest_id for row in legacy))
+
+    def test_standalone_digest_index_recovers_hashed_scope_without_scope_catalog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "standalone"
+            root.mkdir()
+            os.environ["AI_VERSE_MEMORY_HOME"] = str(root / ".ai-verse-memory")
+            try:
+                digest_id, _, _ = mem.write_session_digest(
+                    "sess-standalone-index",
+                    "Standalone historical session mentions a cobalt workflow.",
+                    run_id="run-standalone-index",
+                    scope="project:blue",
+                    topic="Cobalt workflow",
+                    source_refs=["gateway:session:sess-standalone-index"],
+                    source_coverage=["gateway:session:sess-standalone-index:messages:1-5"],
+                    source_version="v1",
+                    effect_id="standalone-index",
+                    root=root,
+                    mode=mem.MODE_STANDALONE,
+                )
+                self.assertEqual(
+                    mem.rebuild_session_digest_index(
+                        root=root,
+                        mode=mem.MODE_STANDALONE,
+                    ),
+                    1,
+                )
+                rows = mem.recall_session_digests(
+                    "cobalt",
+                    scope="project:blue",
+                    root=root,
+                    mode=mem.MODE_STANDALONE,
+                )
+                self.assertEqual([row["id"] for row in rows], [digest_id])
+            finally:
+                os.environ.pop("AI_VERSE_MEMORY_HOME", None)
+
+
 if __name__ == "__main__":
     unittest.main()
