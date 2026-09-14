@@ -29,6 +29,7 @@ jobs:
           python -m py_compile scripts/orientation_map.py
           python -m py_compile scripts/progressive_recall.py
           python -m py_compile scripts/relationship_projection.py
+          python -m py_compile scripts/neighbor_recall_benchmark.py
           python -m py_compile scripts/component.py
           python -m py_compile scripts/install.py
           python -m py_compile scripts/install_engine.py
