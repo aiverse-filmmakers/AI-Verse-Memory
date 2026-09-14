@@ -121,7 +121,7 @@ Use `list_relationships` only for explicit provenance/navigation questions such 
 - Supported D1 relationships are deterministic `supersedes`, `superseded_by`, `derived_from`, and `same_session`.
 - Relationship evidence contains identifiers, canonical versions, and explicit provenance fields, never Memory body text.
 - Do not infer a relationship from similar wording, shared tags, or model judgment.
-- Do not perform automatic neighbor expansion from these edges in D1. Ordinary/progressive recall remains the retrieval authority until D2 proves a bounded traversal is useful.
+- D1 itself performs no neighbor traversal. D2 permits a narrow progressive-recall exception at detail depth: up to four one-hop neighbors may be added only for explicit historical/correction intent or provenance/evidence intent. Do not expand current-truth queries, other recall depths, or multi-hop/unbounded graph walks.
 
 ## Supersession
 
