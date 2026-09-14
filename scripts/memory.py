@@ -77,6 +77,7 @@ _AUTO_CAPTURE_FIELDS = {
     "tags",
     "effect_id",
     "evidence_refs",
+    "supersedes",
     "admission",
 }
 _AUTO_ADMISSION_FIELDS = {
@@ -214,6 +215,26 @@ def capture_candidate(
     elif scope is not None and not isinstance(scope, str):
         raise ValueError("Memory capture scope must be a string")
 
+    supersedes = candidate.get("supersedes")
+    if supersedes is not None:
+        if not isinstance(supersedes, str) or not supersedes.strip():
+            raise ValueError("Memory capture supersedes must be a non-empty string")
+        supersedes = supersedes.strip()
+        if len(supersedes) > 500:
+            raise ValueError("Memory capture supersedes exceeds 500 characters")
+    if mem_type == "correction" and not supersedes:
+        return {
+            "state": "blocked",
+            "reason": "automatic correction requires an explicit supersedes target",
+            "changed": False,
+        }
+    if mem_type != "correction" and supersedes:
+        return {
+            "state": "blocked",
+            "reason": "supersedes is reserved for explicit correction records",
+            "changed": False,
+        }
+
     sanitized = {
         "text": text,
         "type": mem_type,
@@ -223,6 +244,7 @@ def capture_candidate(
         "tags": candidate.get("tags", ""),
         "evidence_refs": refs,
         "effect_id": effect_id,
+        "supersedes": supersedes,
     }
     if _auto_capture_secret_like(sanitized):
         return {
@@ -237,20 +259,38 @@ def capture_candidate(
 
     resolved_root = Path(root or _engine.repository_root()).resolve()
     resolved_mode = mode or detect_mode(resolved_root)
-    mem_id, path, created = _engine.write_atomic(
-        text=text,
-        mem_type=mem_type,
-        scope=scope,
-        importance=importance,
-        confidence=confidence,
-        source=source,
-        why=str(candidate.get("why", "") or ""),
-        tags=str(candidate.get("tags", "") or ""),
-        root=resolved_root,
-        mode=resolved_mode,
-        effect_id=effect_id,
-        evidence_refs=refs,
-    )
+    if mem_type == "correction":
+        mem_id, path, created = _engine.supersede_atomic(
+            supersedes,
+            text,
+            mem_type=mem_type,
+            scope=scope,
+            workspace=None,
+            importance=importance,
+            confidence=confidence,
+            source=source,
+            why=str(candidate.get("why", "") or ""),
+            tags=str(candidate.get("tags", "") or ""),
+            root=resolved_root,
+            mode=resolved_mode,
+            effect_id=effect_id,
+            evidence_refs=refs,
+        )
+    else:
+        mem_id, path, created = _engine.write_atomic(
+            text=text,
+            mem_type=mem_type,
+            scope=scope,
+            importance=importance,
+            confidence=confidence,
+            source=source,
+            why=str(candidate.get("why", "") or ""),
+            tags=str(candidate.get("tags", "") or ""),
+            root=resolved_root,
+            mode=resolved_mode,
+            effect_id=effect_id,
+            evidence_refs=refs,
+        )
     return {
         "state": "captured" if created else "existing",
         "changed": bool(created),
@@ -260,6 +300,7 @@ def capture_candidate(
         "path": _engine.relpath(path, resolved_root) if resolved_mode == _engine.MODE_NATIVE else str(path),
         "source": source,
         "evidence_refs": refs,
+        **({"supersedes": supersedes} if supersedes else {}),
     }
 
 
