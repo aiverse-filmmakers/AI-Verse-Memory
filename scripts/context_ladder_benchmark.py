@@ -468,7 +468,7 @@ def scenario_repeated_context(mem, root: Path, fx: Mapping[str, Any], samples: i
         lambda: mem.recall(
             query,
             workspace="alpha",
-            limit=8,
+            limit=4,
             root=root,
             mode=mem.MODE_NATIVE,
         ),
@@ -479,7 +479,7 @@ def scenario_repeated_context(mem, root: Path, fx: Mapping[str, Any], samples: i
             query,
             depth="summary",
             workspace="alpha",
-            limit=8,
+            limit=4,
             max_bytes=10000,
             root=root,
             mode=mem.MODE_NATIVE,
