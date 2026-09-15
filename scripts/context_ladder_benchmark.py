@@ -188,10 +188,10 @@ def fixture(mem, root: Path) -> Dict[str, Any]:
     )
 
     old_id, _, _ = mem.write_atomic(
-        "J1 Atlas target port is 7100.",
+        "J1-NYX target port is 7100.",
         "fact",
         "workspace:alpha",
-        tags="j1,atlas,target,port",
+        tags="j1,nyx,target,port",
         source="j1-benchmark",
         effect_id="j1-old-port",
         root=root,
@@ -199,11 +199,11 @@ def fixture(mem, root: Path) -> Dict[str, Any]:
     )
     correction_id, _, _ = mem.supersede_atomic(
         old_id,
-        "J1 Atlas target port is 7200.",
+        "J1-NYX target port is 7200.",
         mem_type="correction",
         scope="workspace:alpha",
         evidence_refs=["gateway:run:run-j1-port-correction"],
-        tags="j1,atlas,target,port,correction",
+        tags="j1,nyx,target,port,correction",
         effect_id="j1-new-port",
         root=root,
         mode=mem.MODE_NATIVE,
@@ -324,8 +324,8 @@ def scenario_prior_session(mem, root: Path, fx: Mapping[str, Any], samples: int)
 
 
 def scenario_correction(mem, root: Path, fx: Mapping[str, Any], samples: int) -> Dict[str, Any]:
-    current_query = "current J1 Atlas target port"
-    historical_query = "J1 Atlas target port before correction"
+    current_query = "current J1-NYX target port"
+    historical_query = "J1-NYX target port before correction"
 
     baseline, bt = measured(
         lambda: mem.recall(
