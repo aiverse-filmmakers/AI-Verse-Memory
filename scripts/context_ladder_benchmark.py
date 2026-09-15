@@ -262,7 +262,13 @@ def response_ids(response: Mapping[str, Any]) -> List[str]:
 def row_ids(rows: Sequence[Mapping[str, Any]]) -> List[str]:
     result: List[str] = []
     for row in rows:
-        value = str(row.get("id") or "")
+        if hasattr(row, "keys") and "id" in row.keys():
+            raw = row["id"]
+        elif isinstance(row, Mapping):
+            raw = row.get("id")
+        else:
+            raw = None
+        value = str(raw or "")
         if value and value not in result:
             result.append(value)
     return result
