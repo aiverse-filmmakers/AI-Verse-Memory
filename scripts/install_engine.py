@@ -48,6 +48,68 @@ LEGACY_REGISTRY_BLOCK = (
     "    purpose: \"Provide scoped persistent historical memory, provenance, supersession, and rebuildable local recall without creating a second source of truth.\"\n"
 )
 
+WINDOWS_REPARSE_POINT = 0x0400
+
+
+def _absolute_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(Path(path).expanduser())))
+
+
+def _is_symlink_or_reparse(path: Path) -> bool:
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if os.path.islink(path):
+        return True
+    return bool(getattr(info, "st_file_attributes", 0) & WINDOWS_REPARSE_POINT)
+
+
+def assert_safe_lifecycle_path(target: Path, candidate: Path) -> Path:
+    """Return a lifecycle path only when its existing chain is physically confined to target."""
+    root_input = _absolute_path(target)
+    candidate_abs = _absolute_path(candidate)
+
+    if not root_input.exists() or not root_input.is_dir():
+        raise RuntimeError(f"Memory lifecycle target does not exist or is not a directory: {root_input}")
+    if _is_symlink_or_reparse(root_input):
+        raise RuntimeError(f"Memory lifecycle target may not be a symlink/junction/reparse point: {root_input}")
+
+    root_real = root_input.resolve(strict=True)
+    walk_root = root_input
+    try:
+        relative = candidate_abs.relative_to(root_input)
+    except ValueError:
+        try:
+            relative = candidate_abs.relative_to(root_real)
+            walk_root = root_real
+        except ValueError as exc:
+            raise RuntimeError(f"Memory lifecycle path escapes selected target: {candidate_abs}") from exc
+
+    current = walk_root
+    for part in relative.parts:
+        current = current / part
+        if _is_symlink_or_reparse(current):
+            raise RuntimeError(f"Unsafe symlink/junction/reparse point in Memory lifecycle path: {current}")
+        if current.exists():
+            resolved = current.resolve(strict=True)
+            try:
+                resolved.relative_to(root_real)
+            except ValueError as exc:
+                raise RuntimeError(f"Memory lifecycle path resolves outside selected target: {current}") from exc
+
+    parent = candidate_abs.parent
+    while parent not in (walk_root, root_real) and not parent.exists():
+        parent = parent.parent
+    if _is_symlink_or_reparse(parent):
+        raise RuntimeError(f"Unsafe symlink/junction/reparse parent in Memory lifecycle path: {parent}")
+    parent_real = parent.resolve(strict=True)
+    try:
+        parent_real.relative_to(root_real)
+    except ValueError as exc:
+        raise RuntimeError(f"Memory lifecycle parent resolves outside selected target: {parent}") from exc
+    return candidate_abs
+
 
 def detect_native(target: Path) -> bool:
     manifest = target / "AI-VERSE.yaml"
@@ -62,8 +124,17 @@ def detect_native(target: Path) -> bool:
     )
 
 
-def source_copy(relative: str, destination: Path, source_dir: Optional[Path]) -> None:
+def source_copy(
+    relative: str,
+    destination: Path,
+    source_dir: Optional[Path],
+    target_root: Optional[Path] = None,
+) -> None:
+    if target_root is not None:
+        destination = assert_safe_lifecycle_path(target_root, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if target_root is not None:
+        destination = assert_safe_lifecycle_path(target_root, destination)
     if source_dir:
         src = source_dir / relative
         if not src.exists():
@@ -75,7 +146,9 @@ def source_copy(relative: str, destination: Path, source_dir: Optional[Path]) ->
         destination.write_bytes(response.read())
 
 
-def replace_marker_block(path: Path, block: Optional[str]) -> None:
+def replace_marker_block(path: Path, block: Optional[str], target_root: Optional[Path] = None) -> None:
+    if target_root is not None:
+        path = assert_safe_lifecycle_path(target_root, path)
     text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
     pattern = re.compile(re.escape(MARKER_START) + r".*?" + re.escape(MARKER_END), re.S)
     if pattern.search(text):
@@ -85,11 +158,13 @@ def replace_marker_block(path: Path, block: Optional[str]) -> None:
     elif block:
         text = text.rstrip() + ("\n\n" if text.strip() else "") + block + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
+    if target_root is not None:
+        path = assert_safe_lifecycle_path(target_root, path)
     path.write_text(text, encoding="utf-8")
 
 
 def ensure_gitignore(target: Path, entry: str, comment: str) -> None:
-    path = target / ".gitignore"
+    path = assert_safe_lifecycle_path(target, target / ".gitignore")
     text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
     lines = text.splitlines()
     if entry in lines:
@@ -100,8 +175,8 @@ def ensure_gitignore(target: Path, entry: str, comment: str) -> None:
 
 def _ensure_extension_dir(target: Path) -> Path:
     base = target.resolve()
-    meta = base / ".aiverse"
-    extensions = meta / "extensions"
+    meta = assert_safe_lifecycle_path(base, base / ".aiverse")
+    extensions = assert_safe_lifecycle_path(base, meta / "extensions")
     for path in (meta, extensions):
         if path.exists() and path.is_symlink():
             raise RuntimeError(f"Unsafe symlink in extension registry path: {path}")
@@ -109,6 +184,7 @@ def _ensure_extension_dir(target: Path) -> Path:
             raise RuntimeError(f"Extension registry path is not a directory: {path}")
         if not path.exists():
             path.mkdir(mode=0o700)
+        assert_safe_lifecycle_path(base, path)
     return extensions
 
 
@@ -174,7 +250,7 @@ def _registry_lock(target: Path):
 
 
 def _read_local_registry(target: Path) -> tuple[dict, Optional[str]]:
-    registry = target / LOCAL_REGISTRY
+    registry = assert_safe_lifecycle_path(target, target / LOCAL_REGISTRY)
     if not registry.exists():
         return {"schema_version": "1.0", "extensions": {}}, None
     if registry.is_symlink() or not registry.is_file():
@@ -199,7 +275,7 @@ def _read_local_registry(target: Path) -> tuple[dict, Optional[str]]:
 
 def _write_registry_atomic(target: Path, payload: dict, expected_raw: Optional[str]) -> None:
     extensions = _ensure_extension_dir(target)
-    registry = extensions / "registry.json"
+    registry = assert_safe_lifecycle_path(target, extensions / "registry.json")
     current_raw = registry.read_text(encoding="utf-8") if registry.exists() else None
     if current_raw != expected_raw:
         raise RuntimeError("Local extension registry changed during Memory lifecycle operation")
@@ -283,7 +359,9 @@ def unregister_local_extension(target: Path) -> bool:
         return True
 
 
-def _migrate_exact_legacy_marker(path: Path, label: str) -> str:
+def _migrate_exact_legacy_marker(path: Path, label: str, target_root: Optional[Path] = None) -> str:
+    if target_root is not None:
+        path = assert_safe_lifecycle_path(target_root, path)
     if not path.exists():
         return f"{label}: not present"
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -304,7 +382,7 @@ def _migrate_exact_legacy_marker(path: Path, label: str) -> str:
 
 
 def _migrate_exact_legacy_registry(target: Path) -> str:
-    registry = target / "skills" / "registry.yaml"
+    registry = assert_safe_lifecycle_path(target, target / "skills" / "registry.yaml")
     if not registry.exists():
         return "skills/registry.yaml: not present"
     text = registry.read_text(encoding="utf-8", errors="replace")
@@ -320,8 +398,8 @@ def _migrate_exact_legacy_registry(target: Path) -> str:
 
 def migrate_legacy_native_integration(target: Path) -> list[str]:
     results = [
-        _migrate_exact_legacy_marker(target / "AGENTS.md", "AGENTS.md"),
-        _migrate_exact_legacy_marker(target / "CLAUDE.md", "CLAUDE.md"),
+        _migrate_exact_legacy_marker(target / "AGENTS.md", "AGENTS.md", target),
+        _migrate_exact_legacy_marker(target / "CLAUDE.md", "CLAUDE.md", target),
         _migrate_exact_legacy_registry(target),
     ]
     return results
@@ -336,9 +414,14 @@ def has_local_extension_hook(target: Path) -> bool:
 
 
 def install_skills(target: Path, source_dir: Optional[Path]) -> None:
-    for runtime_root in (target / ".claude" / "skills", target / ".agents" / "skills"):
-        skill_root = runtime_root / "ai-verse-memory"
-        source_copy("SKILL.md", skill_root / "SKILL.md", source_dir)
+    destinations = [
+        target / ".claude" / "skills" / "ai-verse-memory" / "SKILL.md",
+        target / ".agents" / "skills" / "ai-verse-memory" / "SKILL.md",
+    ]
+    for destination in destinations:
+        assert_safe_lifecycle_path(target, destination)
+    for destination in destinations:
+        source_copy("SKILL.md", destination, source_dir, target_root=target)
 
 
 def install_hermes(source_dir: Optional[Path]) -> Optional[Path]:
@@ -362,10 +445,10 @@ def run_engine(engine: Path, target: Path, command: str) -> None:
 
 def install_native(target: Path, source_dir: Optional[Path]) -> None:
     engine_root = target / "scripts" / "ai-verse-memory"
-    source_copy("scripts/memory.py", engine_root / "memory.py", source_dir)
-    source_copy("scripts/component.py", engine_root / "component.py", source_dir)
-    source_copy("protocol/MEMORY-PROTOCOL.md", engine_root / "MEMORY-PROTOCOL.md", source_dir)
-    source_copy("migration/MIGRATION.md", engine_root / "MIGRATION.md", source_dir)
+    source_copy("scripts/memory.py", engine_root / "memory.py", source_dir, target_root=target)
+    source_copy("scripts/component.py", engine_root / "component.py", source_dir, target_root=target)
+    source_copy("protocol/MEMORY-PROTOCOL.md", engine_root / "MEMORY-PROTOCOL.md", source_dir, target_root=target)
+    source_copy("migration/MIGRATION.md", engine_root / "MIGRATION.md", source_dir, target_root=target)
     install_skills(target, source_dir)
 
     migration_results = migrate_legacy_native_integration(target)
@@ -428,17 +511,17 @@ def install_standalone(target: Path, source_dir: Optional[Path]) -> None:
                 "This standalone Memory store was retired after canonical authority handoff; "
                 "refusing to reactivate the old writable canonical route"
             )
-    source_copy("scripts/memory.py", runtime / "memory.py", source_dir)
-    source_copy("scripts/component.py", runtime / "component.py", source_dir)
-    source_copy("protocol/MEMORY-PROTOCOL.md", runtime / "MEMORY-PROTOCOL.md", source_dir)
-    source_copy("migration/MIGRATION.md", runtime / "MIGRATION.md", source_dir)
-    source_copy("templates/scenario.md", runtime / "SCENARIO-TEMPLATE.md", source_dir)
+    source_copy("scripts/memory.py", runtime / "memory.py", source_dir, target_root=target)
+    source_copy("scripts/component.py", runtime / "component.py", source_dir, target_root=target)
+    source_copy("protocol/MEMORY-PROTOCOL.md", runtime / "MEMORY-PROTOCOL.md", source_dir, target_root=target)
+    source_copy("migration/MIGRATION.md", runtime / "MIGRATION.md", source_dir, target_root=target)
+    source_copy("templates/scenario.md", runtime / "SCENARIO-TEMPLATE.md", source_dir, target_root=target)
     profile = runtime / "profile.md"
     if not profile.exists():
-        source_copy("templates/profile.md", profile, source_dir)
+        source_copy("templates/profile.md", profile, source_dir, target_root=target)
     install_skills(target, source_dir)
-    replace_marker_block(target / "AGENTS.md", STANDALONE_BLOCK)
-    replace_marker_block(target / "CLAUDE.md", STANDALONE_BLOCK)
+    replace_marker_block(target / "AGENTS.md", STANDALONE_BLOCK, target_root=target)
+    replace_marker_block(target / "CLAUDE.md", STANDALONE_BLOCK, target_root=target)
     ensure_gitignore(target, ".ai-verse-memory/", "AI-Verse Memory local runtime and personal memory")
     run_engine(runtime / "memory.py", target, "init")
     run_engine(runtime / "memory.py", target, "doctor")

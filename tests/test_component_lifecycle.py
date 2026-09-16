@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -13,6 +15,26 @@ SPEC.loader.exec_module(component)
 
 
 class ComponentLifecycleAcceptanceTests(unittest.TestCase):
+    def _make_dir_link(self, link: Path, destination: Path) -> None:
+        if os.name == "nt":
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(destination)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        else:
+            link.symlink_to(destination, target_is_directory=True)
+
+    def _replace_with_dir_link(self, path: Path, destination: Path) -> None:
+        if path.exists() or path.is_symlink():
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._make_dir_link(path, destination)
+
     def _native_root(self, base: Path) -> Path:
         root = base / "os"
         root.mkdir()
@@ -94,6 +116,83 @@ class ComponentLifecycleAcceptanceTests(unittest.TestCase):
             self.assertEqual(reconciled["state"], "ready")
             self.assertTrue(reconciled["readiness"])
             self.assertIsNotNone(component.memory.locate_memory(mem_id, target, component.memory.MODE_NATIVE))
+
+    def test_install_and_setup_reject_symlink_or_reparse_lifecycle_parents(self):
+        cases = (
+            ("scripts", "install"),
+            ("scripts/ai-verse-memory", "install"),
+            (".claude", "setup"),
+            (".claude/skills", "setup"),
+            (".claude/skills/ai-verse-memory", "setup"),
+            (".agents", "setup"),
+            (".agents/skills", "setup"),
+            (".agents/skills/ai-verse-memory", "setup"),
+        )
+        for relative, action in cases:
+            with self.subTest(relative=relative, action=action):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    target = self._native_root(base)
+                    outside = base / "outside"
+                    outside.mkdir()
+                    sentinel = outside / "sentinel.txt"
+                    sentinel.write_text("must survive", encoding="utf-8")
+
+                    if action == "setup":
+                        component._install_package(target, ROOT)
+
+                    self._replace_with_dir_link(target / relative, outside)
+                    with self.assertRaises(RuntimeError):
+                        if action == "install":
+                            component._install_package(target, ROOT)
+                        else:
+                            component._setup(target, ROOT)
+
+                    self.assertEqual(sentinel.read_text(encoding="utf-8"), "must survive")
+                    self.assertFalse((outside / "memory.py").exists())
+                    self.assertFalse((outside / "SKILL.md").exists())
+
+    def test_uninstall_preflight_rejects_symlink_or_reparse_paths_without_external_deletion(self):
+        cases = (
+            "scripts",
+            "scripts/ai-verse-memory",
+            ".claude",
+            ".claude/skills",
+            ".claude/skills/ai-verse-memory",
+            ".agents",
+            ".agents/skills",
+            ".agents/skills/ai-verse-memory",
+        )
+        for relative in cases:
+            with self.subTest(relative=relative):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    target = self._native_root(base)
+                    component._install_package(target, ROOT)
+                    component._setup(target, ROOT)
+
+                    outside = base / "outside"
+                    outside.mkdir()
+                    external_component = outside / "ai-verse-memory"
+                    external_component.mkdir()
+                    sentinel = external_component / "sentinel.txt"
+                    sentinel.write_text("must survive uninstall", encoding="utf-8")
+
+                    if relative.endswith("ai-verse-memory"):
+                        destination = external_component
+                    else:
+                        destination = outside
+                    self._replace_with_dir_link(target / relative, destination)
+
+                    registry_before = (target / ".aiverse" / "extensions" / "registry.json").read_bytes()
+                    with self.assertRaises(RuntimeError):
+                        component._uninstall(target)
+
+                    self.assertEqual(sentinel.read_text(encoding="utf-8"), "must survive uninstall")
+                    self.assertEqual(
+                        (target / ".aiverse" / "extensions" / "registry.json").read_bytes(),
+                        registry_before,
+                    )
 
     def test_structured_json_status_and_doctor(self):
         with tempfile.TemporaryDirectory() as tmp:
