@@ -67,20 +67,26 @@ def _is_symlink_or_reparse(path: Path) -> bool:
 
 def assert_safe_lifecycle_path(target: Path, candidate: Path) -> Path:
     """Return a lifecycle path only when its existing chain is physically confined to target."""
-    root = _absolute_path(target)
+    root_input = _absolute_path(target)
     candidate_abs = _absolute_path(candidate)
+
+    if not root_input.exists() or not root_input.is_dir():
+        raise RuntimeError(f"Memory lifecycle target does not exist or is not a directory: {root_input}")
+    if _is_symlink_or_reparse(root_input):
+        raise RuntimeError(f"Memory lifecycle target may not be a symlink/junction/reparse point: {root_input}")
+
+    root_real = root_input.resolve(strict=True)
+    walk_root = root_input
     try:
-        relative = candidate_abs.relative_to(root)
-    except ValueError as exc:
-        raise RuntimeError(f"Memory lifecycle path escapes selected target: {candidate_abs}") from exc
+        relative = candidate_abs.relative_to(root_input)
+    except ValueError:
+        try:
+            relative = candidate_abs.relative_to(root_real)
+            walk_root = root_real
+        except ValueError as exc:
+            raise RuntimeError(f"Memory lifecycle path escapes selected target: {candidate_abs}") from exc
 
-    if not root.exists() or not root.is_dir():
-        raise RuntimeError(f"Memory lifecycle target does not exist or is not a directory: {root}")
-    if _is_symlink_or_reparse(root):
-        raise RuntimeError(f"Memory lifecycle target may not be a symlink/junction/reparse point: {root}")
-
-    root_real = root.resolve(strict=True)
-    current = root
+    current = walk_root
     for part in relative.parts:
         current = current / part
         if _is_symlink_or_reparse(current):
@@ -93,7 +99,7 @@ def assert_safe_lifecycle_path(target: Path, candidate: Path) -> Path:
                 raise RuntimeError(f"Memory lifecycle path resolves outside selected target: {current}") from exc
 
     parent = candidate_abs.parent
-    while parent != root and not parent.exists():
+    while parent not in (walk_root, root_real) and not parent.exists():
         parent = parent.parent
     if _is_symlink_or_reparse(parent):
         raise RuntimeError(f"Unsafe symlink/junction/reparse parent in Memory lifecycle path: {parent}")
