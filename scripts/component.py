@@ -319,12 +319,12 @@ def _copy_runtime(target: Path, mode: str, source_dir: Optional[Path]) -> None:
         runtime = target / "scripts" / "ai-verse-memory"
     else:
         runtime = target / ".ai-verse-memory"
-    installer.source_copy("scripts/memory.py", runtime / "memory.py", source_dir)
-    installer.source_copy("scripts/component.py", runtime / "component.py", source_dir)
-    installer.source_copy("protocol/MEMORY-PROTOCOL.md", runtime / "MEMORY-PROTOCOL.md", source_dir)
-    installer.source_copy("migration/MIGRATION.md", runtime / "MIGRATION.md", source_dir)
+    installer.source_copy("scripts/memory.py", runtime / "memory.py", source_dir, target_root=target)
+    installer.source_copy("scripts/component.py", runtime / "component.py", source_dir, target_root=target)
+    installer.source_copy("protocol/MEMORY-PROTOCOL.md", runtime / "MEMORY-PROTOCOL.md", source_dir, target_root=target)
+    installer.source_copy("migration/MIGRATION.md", runtime / "MIGRATION.md", source_dir, target_root=target)
     if mode == memory.MODE_STANDALONE:
-        installer.source_copy("templates/scenario.md", runtime / "SCENARIO-TEMPLATE.md", source_dir)
+        installer.source_copy("templates/scenario.md", runtime / "SCENARIO-TEMPLATE.md", source_dir, target_root=target)
 
 
 def _install_package(target: Path, source_dir: Optional[Path]) -> dict:
@@ -373,10 +373,10 @@ def _setup(target: Path, source_dir: Optional[Path]) -> dict:
         memory.public_beta_assert_writable_authority(target, mode)
         memory.ensure_layout(target, mode)
         if not (target / ".ai-verse-memory" / "profile.md").exists():
-            installer.source_copy("templates/profile.md", target / ".ai-verse-memory" / "profile.md", source_dir)
+            installer.source_copy("templates/profile.md", target / ".ai-verse-memory" / "profile.md", source_dir, target_root=target)
         installer.install_skills(target, source_dir)
-        installer.replace_marker_block(target / "AGENTS.md", installer.STANDALONE_BLOCK)
-        installer.replace_marker_block(target / "CLAUDE.md", installer.STANDALONE_BLOCK)
+        installer.replace_marker_block(target / "AGENTS.md", installer.STANDALONE_BLOCK, target_root=target)
+        installer.replace_marker_block(target / "CLAUDE.md", installer.STANDALONE_BLOCK, target_root=target)
         installer.ensure_gitignore(target, ".ai-verse-memory/", "AI-Verse Memory local runtime and personal memory")
         memory.rebuild(silent=True, root=target, mode=mode)
         memory.public_beta_write_component_state(
@@ -437,14 +437,39 @@ def _update(target: Path, source_dir: Optional[Path]) -> dict:
     return payload
 
 
-def _remove_adapter_dirs(target: Path) -> None:
-    for path in (
+def _adapter_dirs(target: Path) -> tuple[Path, Path]:
+    return (
         target / ".claude" / "skills" / COMPONENT_ID,
         target / ".agents" / "skills" / COMPONENT_ID,
-    ):
-        if path.is_symlink():
-            raise RuntimeError(f"Refusing to remove symlinked Memory adapter: {path}")
+    )
+
+
+def _preflight_uninstall_paths(target: Path, mode: str) -> None:
+    candidates = [*_adapter_dirs(target), _runtime_dir(target, mode)]
+    if mode == memory.MODE_STANDALONE:
+        candidates.extend([target / "AGENTS.md", target / "CLAUDE.md"])
+        candidates.extend(
+            _runtime_dir(target, mode) / name
+            for name in (
+                "memory.py",
+                "memory_engine.py",
+                "os_compat.py",
+                "public_beta.py",
+                "MEMORY-PROTOCOL.md",
+                "MIGRATION.md",
+                "SCENARIO-TEMPLATE.md",
+            )
+        )
+    for candidate in candidates:
+        installer.assert_safe_lifecycle_path(target, candidate)
+
+
+def _remove_adapter_dirs(target: Path) -> None:
+    for path in _adapter_dirs(target):
+        path = installer.assert_safe_lifecycle_path(target, path)
         if path.exists():
+            if not path.is_dir():
+                raise RuntimeError(f"Memory adapter path is not a directory: {path}")
             shutil.rmtree(path)
 
 
@@ -454,15 +479,16 @@ def _uninstall(target: Path) -> dict:
     if mode == "incompatible":
         raise RuntimeError("Cannot safely uninstall from an incompatible AI-Verse OS host")
     previous_enabled = before.get("enabled")
+    _preflight_uninstall_paths(target, mode)
 
     if mode == memory.MODE_NATIVE:
         if before.get("attached"):
             installer.unregister_local_extension(target)
         _remove_adapter_dirs(target)
-        runtime = _runtime_dir(target, mode)
+        runtime = installer.assert_safe_lifecycle_path(target, _runtime_dir(target, mode))
         if runtime.exists():
-            if runtime.is_symlink():
-                raise RuntimeError(f"Refusing to remove symlinked Memory runtime: {runtime}")
+            if not runtime.is_dir():
+                raise RuntimeError(f"Memory runtime path is not a directory: {runtime}")
             shutil.rmtree(runtime)
         memory.public_beta_write_component_state(
             target,
@@ -476,7 +502,7 @@ def _uninstall(target: Path) -> dict:
         _remove_adapter_dirs(target)
         for contract in (target / "AGENTS.md", target / "CLAUDE.md"):
             if contract.exists():
-                installer.replace_marker_block(contract, None)
+                installer.replace_marker_block(contract, None, target_root=target)
         runtime = _runtime_dir(target, mode)
         for name in (
             "memory.py",
@@ -487,9 +513,7 @@ def _uninstall(target: Path) -> dict:
             "MIGRATION.md",
             "SCENARIO-TEMPLATE.md",
         ):
-            path = runtime / name
-            if path.is_symlink():
-                raise RuntimeError(f"Refusing to remove symlinked Memory runtime file: {path}")
+            path = installer.assert_safe_lifecycle_path(target, runtime / name)
             if path.exists() and path.is_file():
                 path.unlink()
         memory.public_beta_write_component_state(
@@ -551,8 +575,8 @@ def _reconcile(target: Path, source_dir: Optional[Path]) -> dict:
             if authority == "retired":
                 raise RuntimeError("Retired standalone Memory cannot be reconciled into an active writer")
             installer.install_skills(target, source_dir)
-            installer.replace_marker_block(target / "AGENTS.md", installer.STANDALONE_BLOCK)
-            installer.replace_marker_block(target / "CLAUDE.md", installer.STANDALONE_BLOCK)
+            installer.replace_marker_block(target / "AGENTS.md", installer.STANDALONE_BLOCK, target_root=target)
+            installer.replace_marker_block(target / "CLAUDE.md", installer.STANDALONE_BLOCK, target_root=target)
             memory.ensure_layout(target, mode)
             memory.rebuild(silent=True, root=target, mode=mode)
         memory.public_beta_write_component_state(
