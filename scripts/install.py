@@ -41,23 +41,23 @@ def detect_native(target: Path) -> bool:
 _original_source_copy = _installer.source_copy
 
 
-def source_copy(relative: str, destination: Path, source_dir):
+def source_copy(relative: str, destination: Path, source_dir, target_root=None):
     """Copy a requested file and keep the installed engine gate self-contained."""
-    _original_source_copy(relative, destination, source_dir)
+    _original_source_copy(relative, destination, source_dir, target_root=target_root)
     if relative == "scripts/memory.py":
-        _original_source_copy("scripts/memory_engine.py", destination.parent / "memory_engine.py", source_dir)
-        _original_source_copy("scripts/os_compat.py", destination.parent / "os_compat.py", source_dir)
-        _original_source_copy("scripts/public_beta.py", destination.parent / "public_beta.py", source_dir)
-        _original_source_copy("scripts/session_digest.py", destination.parent / "session_digest.py", source_dir)
-        _original_source_copy("scripts/session_digest_index.py", destination.parent / "session_digest_index.py", source_dir)
-        _original_source_copy("scripts/session_promotion.py", destination.parent / "session_promotion.py", source_dir)
-        _original_source_copy("scripts/orientation_map.py", destination.parent / "orientation_map.py", source_dir)
-        _original_source_copy("scripts/progressive_recall.py", destination.parent / "progressive_recall.py", source_dir)
-        _original_source_copy("scripts/relationship_projection.py", destination.parent / "relationship_projection.py", source_dir)
+        _original_source_copy("scripts/memory_engine.py", destination.parent / "memory_engine.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/os_compat.py", destination.parent / "os_compat.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/public_beta.py", destination.parent / "public_beta.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/session_digest.py", destination.parent / "session_digest.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/session_digest_index.py", destination.parent / "session_digest_index.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/session_promotion.py", destination.parent / "session_promotion.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/orientation_map.py", destination.parent / "orientation_map.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/progressive_recall.py", destination.parent / "progressive_recall.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/relationship_projection.py", destination.parent / "relationship_projection.py", source_dir, target_root=target_root)
     elif relative == "scripts/component.py":
-        _original_source_copy("scripts/install.py", destination.parent / "install.py", source_dir)
-        _original_source_copy("scripts/install_engine.py", destination.parent / "install_engine.py", source_dir)
-        _original_source_copy("scripts/os_compat.py", destination.parent / "os_compat.py", source_dir)
+        _original_source_copy("scripts/install.py", destination.parent / "install.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/install_engine.py", destination.parent / "install_engine.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/os_compat.py", destination.parent / "os_compat.py", source_dir, target_root=target_root)
 
 
 _installer.detect_native = detect_native
