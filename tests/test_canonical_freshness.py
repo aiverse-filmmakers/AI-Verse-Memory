@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from tests.native_lifecycle_fixture import mark_native_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("ai_verse_memory_freshness", ROOT / "scripts" / "memory.py")
@@ -35,6 +36,7 @@ class CanonicalFreshnessAcceptanceTests(unittest.TestCase):
             "id: alpha\nname: Alpha\ntype: test\nstatus: active\npurpose: freshness acceptance\n",
             encoding="utf-8",
         )
+        mark_native_ready(self.root, mem)
         mem.ensure_layout(self.root, mem.MODE_NATIVE)
 
     def tearDown(self):
