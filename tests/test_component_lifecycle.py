@@ -117,6 +117,164 @@ class ComponentLifecycleAcceptanceTests(unittest.TestCase):
             self.assertTrue(reconciled["readiness"])
             self.assertIsNotNone(component.memory.locate_memory(mem_id, target, component.memory.MODE_NATIVE))
 
+    def _assert_loaded_writer_blocked(self, target: Path, *, mem_path=None, digest_id=None, marker: str):
+        with self.assertRaisesRegex(RuntimeError, "lifecycle authority|attached|enabled|setup-complete|migration"):
+            component.memory.write_atomic(
+                f"blocked atomic {marker}",
+                "fact",
+                "workspace:alpha",
+                effect_id=f"blocked-atomic-{marker}",
+                root=target,
+                mode=component.memory.MODE_NATIVE,
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "lifecycle authority|attached|enabled|setup-complete|migration"):
+            component.memory.write_session_digest(
+                f"sess-{marker}",
+                f"blocked digest {marker}",
+                run_id=f"run-{marker}",
+                scope="workspace:alpha",
+                topic=f"blocked {marker}",
+                source_refs=[f"gateway:run:run-{marker}"],
+                source_coverage=[f"gateway:run:run-{marker}:messages:1-2"],
+                source_version="test",
+                effect_id=f"blocked-digest-{marker}",
+                root=target,
+                mode=component.memory.MODE_NATIVE,
+            )
+
+        if mem_path is not None:
+            with self.assertRaisesRegex(RuntimeError, "lifecycle authority|attached|enabled|setup-complete|migration"):
+                component.memory.update_meta(mem_path, {"tags": f"blocked-{marker}"})
+
+        if digest_id is not None:
+            with self.assertRaisesRegex(RuntimeError, "lifecycle authority|attached|enabled|setup-complete|migration"):
+                component.memory.promote_session_digest(
+                    digest_id,
+                    [
+                        {
+                            "text": f"blocked promotion {marker}",
+                            "type": "lesson",
+                            "confidence": 0.95,
+                            "admission": {
+                                "durable": True,
+                                "historical": True,
+                                "current_truth": False,
+                                "contains_secret": False,
+                                "strategic": False,
+                                "permission_expansion": False,
+                                "privacy_ambiguous": False,
+                                "external_authority": False,
+                            },
+                        }
+                    ],
+                    workspace="alpha",
+                    root=target,
+                    mode=component.memory.MODE_NATIVE,
+                )
+
+    def test_wsa_2026_013_loaded_native_writer_obeys_setup_disable_detach_and_uninstall(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = self._native_root(Path(tmp))
+            component._install_package(target, ROOT)
+
+            # Package installation alone must not authorize canonical native writes.
+            self._assert_loaded_writer_blocked(target, marker="pre-setup")
+
+            component._setup(target, ROOT)
+            mem_id, mem_path, created = component.memory.write_atomic(
+                "Lifecycle-authorized canonical record",
+                "fact",
+                "workspace:alpha",
+                effect_id="wsa-013-seed",
+                root=target,
+                mode=component.memory.MODE_NATIVE,
+            )
+            self.assertTrue(created)
+            digest_id, _, digest_created = component.memory.write_session_digest(
+                "sess-wsa-013",
+                "Lifecycle authority seed digest.",
+                run_id="run-wsa-013",
+                scope="workspace:alpha",
+                topic="Lifecycle authority",
+                source_refs=["gateway:run:run-wsa-013"],
+                source_coverage=["gateway:run:run-wsa-013:messages:1-4"],
+                source_version="test",
+                effect_id="wsa-013-digest",
+                root=target,
+                mode=component.memory.MODE_NATIVE,
+            )
+            self.assertTrue(digest_created)
+
+            component._set_enabled(target, False)
+            self._assert_loaded_writer_blocked(
+                target,
+                mem_path=mem_path,
+                digest_id=digest_id,
+                marker="disabled",
+            )
+
+            component._set_enabled(target, True)
+            component._detach(target)
+            self._assert_loaded_writer_blocked(
+                target,
+                mem_path=mem_path,
+                digest_id=digest_id,
+                marker="detached",
+            )
+
+            component._setup(target, ROOT)
+            component._uninstall(target)
+            self._assert_loaded_writer_blocked(
+                target,
+                mem_path=mem_path,
+                digest_id=digest_id,
+                marker="uninstalled",
+            )
+
+            # Reinstall without setup leaves preserved canonical data but no write authority.
+            component._install_package(target, ROOT)
+            self.assertEqual(component.status_payload(target)["state"], "setup-required")
+            self._assert_loaded_writer_blocked(
+                target,
+                mem_path=mem_path,
+                digest_id=digest_id,
+                marker="reinstalled-pre-setup",
+            )
+            self.assertIsNotNone(component.memory.locate_memory(mem_id, target, component.memory.MODE_NATIVE))
+
+    def test_wsa_2026_013_registry_supported_and_installed_flags_are_write_authority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = self._native_root(Path(tmp))
+            component._install_package(target, ROOT)
+            component._setup(target, ROOT)
+            registry_path = target / ".aiverse/extensions/registry.json"
+
+            for field in ("supported", "installed"):
+                with self.subTest(field=field):
+                    payload = json.loads(registry_path.read_text(encoding="utf-8"))
+                    payload["extensions"]["ai-verse-memory"][field] = False
+                    registry_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, "lifecycle authority"):
+                        component.memory.write_atomic(
+                            f"must fail when registry {field}=false",
+                            "fact",
+                            "workspace:alpha",
+                            root=target,
+                            mode=component.memory.MODE_NATIVE,
+                        )
+                    payload["extensions"]["ai-verse-memory"][field] = True
+                    registry_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+            created = component.memory.write_atomic(
+                "registry authority restored",
+                "fact",
+                "workspace:alpha",
+                root=target,
+                mode=component.memory.MODE_NATIVE,
+            )
+            self.assertTrue(created[2])
+
     def test_install_and_setup_reject_symlink_or_reparse_lifecycle_parents(self):
         cases = (
             ("scripts", "install"),
@@ -268,6 +426,16 @@ class ComponentLifecycleAcceptanceTests(unittest.TestCase):
             self.assertFalse(
                 (target / "operator" / "memory" / ".ai-verse-memory-state" / "authority-handoff.json").exists()
             )
+            with self.assertRaisesRegex(RuntimeError, "migration"):
+                component.memory.write_atomic(
+                    "ordinary write must wait for authority handoff",
+                    "fact",
+                    "workspace:alpha",
+                    root=target,
+                    mode=component.memory.MODE_NATIVE,
+                )
+            planned = component.memory.migrate_legacy(target, apply=False)
+            self.assertEqual(planned["migratable"], 1)
 
     def test_status_is_non_destructive_on_empty_standalone_root(self):
         with tempfile.TemporaryDirectory() as tmp:
