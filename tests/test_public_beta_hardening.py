@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from tests.native_lifecycle_fixture import mark_native_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("ai_verse_memory_public_beta_tests", ROOT / "scripts" / "memory.py")
@@ -28,6 +29,7 @@ class PublicBetaHardeningTests(unittest.TestCase):
             "id: alpha\nname: Alpha\ntype: test\nstatus: active\npurpose: public beta acceptance\n",
             encoding="utf-8",
         )
+        mark_native_ready(root, mem)
         return root
 
     def _standalone_root(self, base: Path) -> Path:
