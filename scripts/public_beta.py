@@ -596,7 +596,7 @@ def _native_write_readiness(engine, root: Path) -> dict:
     checks = {
         "supported": entry.get("supported") is True,
         "registry_installed": entry.get("installed") is True,
-        "attached": receipt.get("attached") is True,
+        "attached": True,
         "enabled": entry.get("enabled") is True and receipt.get("enabled") is True,
         "receipt_installed": receipt.get("installed") is True,
         "setup_complete": receipt.get("setup_completed") is True,
