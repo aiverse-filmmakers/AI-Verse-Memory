@@ -29,6 +29,8 @@ LOCK_STALE_SECONDS = 600
 LOCK_DEAD_PROCESS_GRACE_SECONDS = 2
 LOCK_WAIT_SECONDS = 120
 _LOCK_LOCAL = threading.local()
+_LOCK_PROCESS_GUARD = threading.Lock()
+_LOCK_PROCESS_LOCKS: Dict[str, threading.Lock] = {}
 
 
 def _now_iso() -> str:
@@ -284,6 +286,15 @@ def _lock_progress_token(lock: Path):
     )
 
 
+def _process_mutation_lock(key: str) -> threading.Lock:
+    with _LOCK_PROCESS_GUARD:
+        lock = _LOCK_PROCESS_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _LOCK_PROCESS_LOCKS[key] = lock
+        return lock
+
+
 @contextmanager
 def _mutation_lock(engine, root: Path, mode: str):
     state = _state_dir(engine, root, mode)
@@ -298,59 +309,67 @@ def _mutation_lock(engine, root: Path, mode: str):
             counts[key] -= 1
         return
 
-    deadline = time.monotonic() + LOCK_WAIT_SECONDS
-    observed_holder = None
-    while True:
-        try:
-            fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            break
-        except FileExistsError as exc:
-            if _lock_is_stale(lock):
-                try:
-                    lock.unlink()
-                except FileNotFoundError:
-                    pass
-                observed_holder = None
-                deadline = time.monotonic() + LOCK_WAIT_SECONDS
-                continue
-
-            progress = _lock_progress_token(lock)
-            if progress is not None and progress != observed_holder:
-                observed_holder = progress
-                deadline = time.monotonic() + LOCK_WAIT_SECONDS
-
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"Timed out waiting for AI-Verse Memory canonical mutation lock: {lock}") from exc
-            time.sleep(0.05)
-        except OSError as exc:
-            raise RuntimeError(f"Could not acquire Memory mutation lock: {exc}") from exc
-
+    # Same-process writers serialize without repeatedly polling the filesystem
+    # lock. The durable file lock remains the cross-process authority and keeps
+    # all existing stale-owner/recovery semantics unchanged.
+    process_lock = _process_mutation_lock(key)
+    process_lock.acquire()
     try:
-        holder = hashlib.sha256(
-            f"{os.getpid()}:{threading.get_ident()}:{time.monotonic_ns()}".encode("utf-8")
-        ).hexdigest()[:20]
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "schema_version": PUBLIC_BETA_SCHEMA,
-                    "pid": os.getpid(),
-                    "holder": holder,
-                    "created_at": _now_iso(),
-                },
-                handle,
-            )
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        counts[key] = 1
-        _recover_transactions(engine, root, mode)
-        yield
-    finally:
-        counts.pop(key, None)
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        observed_holder = None
+        while True:
+            try:
+                fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                break
+            except FileExistsError as exc:
+                if _lock_is_stale(lock):
+                    try:
+                        lock.unlink()
+                    except FileNotFoundError:
+                        pass
+                    observed_holder = None
+                    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+                    continue
+
+                progress = _lock_progress_token(lock)
+                if progress is not None and progress != observed_holder:
+                    observed_holder = progress
+                    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"Timed out waiting for AI-Verse Memory canonical mutation lock: {lock}") from exc
+                time.sleep(0.05)
+            except OSError as exc:
+                raise RuntimeError(f"Could not acquire Memory mutation lock: {exc}") from exc
+
         try:
-            lock.unlink()
-        except FileNotFoundError:
-            pass
+            holder = hashlib.sha256(
+                f"{os.getpid()}:{threading.get_ident()}:{time.monotonic_ns()}".encode("utf-8")
+            ).hexdigest()[:20]
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": PUBLIC_BETA_SCHEMA,
+                        "pid": os.getpid(),
+                        "holder": holder,
+                        "created_at": _now_iso(),
+                    },
+                    handle,
+                )
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            counts[key] = 1
+            _recover_transactions(engine, root, mode)
+            yield
+        finally:
+            counts.pop(key, None)
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+    finally:
+        process_lock.release()
 
 
 def _assert_path_within(path: Path, boundary: Path) -> None:
