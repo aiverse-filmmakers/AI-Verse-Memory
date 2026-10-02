@@ -2,6 +2,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from tests.native_lifecycle_fixture import mark_native_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -28,6 +29,7 @@ class ExternalLegacyMigrationTests(unittest.TestCase):
             encoding="utf-8",
         )
         mem.ensure_layout(root, mem.MODE_NATIVE)
+        mark_native_ready(root, mem)
         return root
 
     def _standalone_root(self, base: Path) -> Path:

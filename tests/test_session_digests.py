@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from tests.native_lifecycle_fixture import mark_native_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 MEMORY_PATH = ROOT / "scripts" / "memory.py"
@@ -37,6 +38,7 @@ class SessionDigestTests(unittest.TestCase):
                 f"id: {workspace}\nname: {workspace.title()}\ntype: test\nstatus: active\npurpose: digest tests\n",
                 encoding="utf-8",
             )
+        mark_native_ready(root, mem)
         return root
 
     def _write_alpha(self, root: Path, **overrides):
@@ -315,6 +317,7 @@ class SessionDigestIndexTests(unittest.TestCase):
                 f"id: {workspace}\nname: {workspace.title()}\ntype: test\nstatus: active\npurpose: digest index tests\n",
                 encoding="utf-8",
             )
+        mark_native_ready(root, mem)
         return root
 
     def _digest(
@@ -631,6 +634,7 @@ class SessionDigestPromotionTests(unittest.TestCase):
                 f"id: {workspace}\nname: {workspace.title()}\ntype: test\nstatus: active\npurpose: promotion tests\n",
                 encoding="utf-8",
             )
+        mark_native_ready(root, mem)
         return root
 
     def _digest(self, root: Path, *, session_id: str = "sess-promote"):

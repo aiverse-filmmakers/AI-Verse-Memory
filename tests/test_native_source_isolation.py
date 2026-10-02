@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from tests.native_lifecycle_fixture import mark_native_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("ai_verse_memory_source_isolation", ROOT / "scripts" / "memory.py")
@@ -49,6 +50,7 @@ class NativeSourceIsolationAcceptanceTests(unittest.TestCase):
                 encoding="utf-8",
             )
         mem.ensure_layout(root, mem.MODE_NATIVE)
+        mark_native_ready(root, mem)
         return root
 
     def _write_atomic(self, path: Path, mem_id: str, scope: str, token: str) -> None:

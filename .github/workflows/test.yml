@@ -138,7 +138,19 @@ jobs:
           ).stdout.strip()
           assert tracked == "", tracked
 
-          subprocess.run([os.sys.executable, str(engine), "--root", str(target), "remember", "--type", "state", "--workspace", "sample", "--text", "Native installer smoke memory"], check=True)
+          remember = [os.sys.executable, str(engine), "--root", str(target), "remember", "--type", "state", "--workspace", "sample", "--text", "Native installer smoke memory"]
+          pre_setup = subprocess.run(remember, text=True, capture_output=True)
+          assert pre_setup.returncode != 0
+          assert "setup-complete lifecycle authority" in pre_setup.stderr
+
+          component = root / "scripts/component.py"
+          subprocess.run(
+              [os.sys.executable, str(component), "--target", str(target), "--source-dir", str(root), "--json", "setup"],
+              check=True,
+          )
+          assert (target / "operator/memory/.ai-verse-memory-state/component.json").exists()
+
+          subprocess.run(remember, check=True)
           recall = subprocess.run([os.sys.executable, str(engine), "--root", str(target), "recall", "smoke memory", "--workspace", "sample"], check=True, text=True, capture_output=True)
           assert "Native installer smoke memory" in recall.stdout
           subprocess.run([os.sys.executable, str(engine), "--root", str(target), "doctor"], check=True)

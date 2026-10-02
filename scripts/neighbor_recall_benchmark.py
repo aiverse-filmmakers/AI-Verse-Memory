@@ -106,6 +106,35 @@ def digest(mem, root: Path, wid: str, sid: str, rid: str, topic: str, summary: s
 
 
 def fixture(mem, root: Path) -> Dict[str, Any]:
+    registry = root / ".aiverse" / "extensions" / "registry.json"
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "extensions": {
+                    "ai-verse-memory": {
+                        "id": "ai-verse-memory",
+                        "supported": True,
+                        "installed": True,
+                        "enabled": True,
+                        "version": getattr(mem, "VERSION", "test"),
+                    }
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    mem.public_beta_write_component_state(
+        root,
+        mem.MODE_NATIVE,
+        installed=True,
+        setup_completed=True,
+        enabled=True,
+        last_action="benchmark-fixture",
+    )
     lesson_digest, _, _ = digest(
         mem,
         root,

@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from tests.native_lifecycle_fixture import mark_native_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("ai_verse_memory_public_beta_tests", ROOT / "scripts" / "memory.py")
@@ -28,6 +29,7 @@ class PublicBetaHardeningTests(unittest.TestCase):
             "id: alpha\nname: Alpha\ntype: test\nstatus: active\npurpose: public beta acceptance\n",
             encoding="utf-8",
         )
+        mark_native_ready(root, mem)
         return root
 
     def _standalone_root(self, base: Path) -> Path:
@@ -215,7 +217,7 @@ class PublicBetaHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._native_root(Path(tmp))
             state = root / "operator" / "memory" / ".ai-verse-memory-state"
-            state.mkdir(parents=True)
+            state.mkdir(parents=True, exist_ok=True)
             lock = state / "mutation.lock"
             lock.write_text(
                 json.dumps(
@@ -251,7 +253,7 @@ class PublicBetaHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._native_root(Path(tmp))
             state = root / "operator" / "memory" / ".ai-verse-memory-state"
-            state.mkdir(parents=True)
+            state.mkdir(parents=True, exist_ok=True)
             lock = state / "mutation.lock"
             lock.write_text(
                 json.dumps({"schema_version": 1, "pid": 999999999, "created_at": "2000-01-01T00:00:00+00:00"}) + "\n",

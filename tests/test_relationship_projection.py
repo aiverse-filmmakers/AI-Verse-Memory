@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from tests.native_lifecycle_fixture import mark_native_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 MEMORY_PATH = ROOT / "scripts" / "memory.py"
@@ -41,6 +42,7 @@ class RelationshipProjectionTests(unittest.TestCase):
                 'purpose: "relationship projection tests"\n',
                 encoding="utf-8",
             )
+        mark_native_ready(root, mem)
         return root
 
     def _digest(

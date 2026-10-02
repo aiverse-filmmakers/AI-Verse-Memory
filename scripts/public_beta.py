@@ -29,6 +29,8 @@ LOCK_STALE_SECONDS = 600
 LOCK_DEAD_PROCESS_GRACE_SECONDS = 2
 LOCK_WAIT_SECONDS = 120
 _LOCK_LOCAL = threading.local()
+_LOCK_PROCESS_GUARD = threading.Lock()
+_LOCK_PROCESS_LOCKS: Dict[str, threading.Lock] = {}
 
 
 def _now_iso() -> str:
@@ -284,6 +286,15 @@ def _lock_progress_token(lock: Path):
     )
 
 
+def _process_mutation_lock(key: str) -> threading.Lock:
+    with _LOCK_PROCESS_GUARD:
+        lock = _LOCK_PROCESS_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _LOCK_PROCESS_LOCKS[key] = lock
+        return lock
+
+
 @contextmanager
 def _mutation_lock(engine, root: Path, mode: str):
     state = _state_dir(engine, root, mode)
@@ -298,59 +309,67 @@ def _mutation_lock(engine, root: Path, mode: str):
             counts[key] -= 1
         return
 
-    deadline = time.monotonic() + LOCK_WAIT_SECONDS
-    observed_holder = None
-    while True:
-        try:
-            fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            break
-        except FileExistsError as exc:
-            if _lock_is_stale(lock):
-                try:
-                    lock.unlink()
-                except FileNotFoundError:
-                    pass
-                observed_holder = None
-                deadline = time.monotonic() + LOCK_WAIT_SECONDS
-                continue
-
-            progress = _lock_progress_token(lock)
-            if progress is not None and progress != observed_holder:
-                observed_holder = progress
-                deadline = time.monotonic() + LOCK_WAIT_SECONDS
-
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"Timed out waiting for AI-Verse Memory canonical mutation lock: {lock}") from exc
-            time.sleep(0.05)
-        except OSError as exc:
-            raise RuntimeError(f"Could not acquire Memory mutation lock: {exc}") from exc
-
+    # Same-process writers serialize without repeatedly polling the filesystem
+    # lock. The durable file lock remains the cross-process authority and keeps
+    # all existing stale-owner/recovery semantics unchanged.
+    process_lock = _process_mutation_lock(key)
+    process_lock.acquire()
     try:
-        holder = hashlib.sha256(
-            f"{os.getpid()}:{threading.get_ident()}:{time.monotonic_ns()}".encode("utf-8")
-        ).hexdigest()[:20]
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "schema_version": PUBLIC_BETA_SCHEMA,
-                    "pid": os.getpid(),
-                    "holder": holder,
-                    "created_at": _now_iso(),
-                },
-                handle,
-            )
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        counts[key] = 1
-        _recover_transactions(engine, root, mode)
-        yield
-    finally:
-        counts.pop(key, None)
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        observed_holder = None
+        while True:
+            try:
+                fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                break
+            except FileExistsError as exc:
+                if _lock_is_stale(lock):
+                    try:
+                        lock.unlink()
+                    except FileNotFoundError:
+                        pass
+                    observed_holder = None
+                    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+                    continue
+
+                progress = _lock_progress_token(lock)
+                if progress is not None and progress != observed_holder:
+                    observed_holder = progress
+                    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"Timed out waiting for AI-Verse Memory canonical mutation lock: {lock}") from exc
+                time.sleep(0.05)
+            except OSError as exc:
+                raise RuntimeError(f"Could not acquire Memory mutation lock: {exc}") from exc
+
         try:
-            lock.unlink()
-        except FileNotFoundError:
-            pass
+            holder = hashlib.sha256(
+                f"{os.getpid()}:{threading.get_ident()}:{time.monotonic_ns()}".encode("utf-8")
+            ).hexdigest()[:20]
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": PUBLIC_BETA_SCHEMA,
+                        "pid": os.getpid(),
+                        "holder": holder,
+                        "created_at": _now_iso(),
+                    },
+                    handle,
+                )
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            counts[key] = 1
+            _recover_transactions(engine, root, mode)
+            yield
+        finally:
+            counts.pop(key, None)
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+    finally:
+        process_lock.release()
 
 
 def _assert_path_within(path: Path, boundary: Path) -> None:
@@ -528,21 +547,131 @@ def _authority_file(engine, root: Path, mode: str) -> Path:
     return _state_dir(engine, root, mode) / "authority-handoff.json"
 
 
-def _assert_writable_authority(engine, root: Path, mode: str) -> None:
-    if mode != engine.MODE_STANDALONE:
-        return
-    authority = _authority_file(engine, root, mode)
-    if not authority.exists():
-        return
-    if authority.is_symlink() or not authority.is_file():
-        raise RuntimeError(f"Unsafe standalone authority marker: {authority}")
-    payload = json.loads(authority.read_text(encoding="utf-8"))
-    if payload.get("status") == "retired":
-        replacement = payload.get("replacement_root") or "the adopted AI-Verse OS"
-        raise RuntimeError(
-            "This standalone Memory store is retired and preserved as historical evidence. "
-            f"Canonical writes moved to {replacement}."
+def _read_authority_json(path: Path, label: str) -> Optional[dict]:
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"Unsafe {label}: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Unreadable {label}: {path}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Invalid {label}: expected JSON object")
+    return payload
+
+
+def _native_registry_entry(root: Path) -> dict:
+    registry_path = root / ".aiverse" / "extensions" / "registry.json"
+    payload = _read_authority_json(registry_path, "Memory extension registry")
+    if payload is None:
+        raise RuntimeError("Memory canonical writes require an attached local extension registry entry")
+    if payload.get("schema_version") != "1.0" or not isinstance(payload.get("extensions"), dict):
+        raise RuntimeError("Memory canonical writes require a valid local extension registry")
+    entry = payload["extensions"].get("ai-verse-memory")
+    if not isinstance(entry, dict):
+        raise RuntimeError("Memory canonical writes require an attached ai-verse-memory registry entry")
+    return entry
+
+
+def _native_migration_required(engine, root: Path) -> Tuple[bool, str]:
+    handoff = _read_authority_json(
+        _authority_file(engine, root, engine.MODE_NATIVE),
+        "native Memory authority handoff",
+    )
+    handoff_status = str((handoff or {}).get("status") or "active")
+
+    plan = root / "operator" / "memory" / "migrations" / "legacy-ai-verse-memory-plan.json"
+    if plan.exists():
+        if plan.is_symlink() or not plan.is_file():
+            return True, "migration plan is unsafe"
+        if handoff_status != "complete":
+            return True, "reviewed legacy migration plan has not completed authority handoff"
+
+    legacy = root / ".ai-verse-memory"
+    if legacy.exists():
+        if legacy.is_symlink() or not legacy.is_dir():
+            return True, "legacy standalone Memory root is unsafe"
+        source_authority = _read_authority_json(
+            legacy / "AUTHORITY.json",
+            "legacy Memory authority marker",
         )
+        retired = bool(
+            source_authority
+            and source_authority.get("status") == "retired"
+            and handoff
+            and source_authority.get("handoff_id") == handoff.get("handoff_id")
+        )
+        if not retired:
+            return True, "legacy standalone Memory is still an active writable canonical route"
+    return False, ""
+
+
+def _native_write_readiness(engine, root: Path) -> dict:
+    root = Path(root).resolve()
+    receipt = read_component_state(engine, root, engine.MODE_NATIVE)
+    entry = _native_registry_entry(root)
+
+    checks = {
+        "supported": entry.get("supported") is True,
+        "registry_installed": entry.get("installed") is True,
+        "attached": True,
+        "enabled": entry.get("enabled") is True and receipt.get("enabled") is True,
+        "receipt_installed": receipt.get("installed") is True,
+        "setup_complete": receipt.get("setup_completed") is True,
+    }
+    migration_required, migration_reason = _native_migration_required(engine, root)
+    return {
+        "ready": all(checks.values()) and not migration_required,
+        "base_ready": all(checks.values()),
+        "migration_required": migration_required,
+        "migration_reason": migration_reason,
+        "checks": checks,
+    }
+
+
+def _assert_writable_authority(
+    engine,
+    root: Path,
+    mode: str,
+    *,
+    intent: str = "normal",
+) -> None:
+    root = Path(root).resolve()
+    if mode == engine.MODE_STANDALONE:
+        authority = _authority_file(engine, root, mode)
+        if not authority.exists():
+            return
+        if authority.is_symlink() or not authority.is_file():
+            raise RuntimeError(f"Unsafe standalone authority marker: {authority}")
+        payload = json.loads(authority.read_text(encoding="utf-8"))
+        if payload.get("status") == "retired":
+            replacement = payload.get("replacement_root") or "the adopted AI-Verse OS"
+            raise RuntimeError(
+                "This standalone Memory store is retired and preserved as historical evidence. "
+                f"Canonical writes moved to {replacement}."
+            )
+        return
+
+    if mode != engine.MODE_NATIVE:
+        raise RuntimeError(f"Unsupported Memory write mode: {mode}")
+
+    readiness = _native_write_readiness(engine, root)
+    failed = [name for name, ok in readiness["checks"].items() if not ok]
+    if failed:
+        raise RuntimeError(
+            "Native Memory canonical writes require supported + installed + attached + enabled + "
+            "setup-complete lifecycle authority; failed: " + ", ".join(failed)
+        )
+
+    if readiness["migration_required"] and intent != "migration":
+        raise RuntimeError(
+            "Native Memory canonical writes are blocked while migration is required: "
+            + (readiness["migration_reason"] or "authority handoff incomplete")
+        )
+
+    if intent not in {"normal", "migration"}:
+        raise RuntimeError(f"Unsupported Memory write intent: {intent}")
 
 
 def _patched_write_atomic(engine, original_rebuild):
@@ -1201,6 +1330,12 @@ def _patched_migrate_legacy(engine, original_rebuild):
         if engine.detect_mode(root) != engine.MODE_NATIVE:
             raise ValueError("migrate-legacy is only for AI-Verse OS v2 native mode")
         with _mutation_lock(engine, root, engine.MODE_NATIVE):
+            _assert_writable_authority(
+                engine,
+                root,
+                engine.MODE_NATIVE,
+                intent="migration",
+            )
             plan_path, report_path = _migration_paths(engine, root)
             snapshot = _legacy_snapshot(engine, root, source_root)
             base_counts = dict(snapshot["counts"])
@@ -1310,6 +1445,12 @@ def _patched_migration_complete(engine):
         with _mutation_lock(engine, root, mode):
             p = engine.paths(root, mode)
             if mode == engine.MODE_NATIVE:
+                _assert_writable_authority(
+                    engine,
+                    root,
+                    mode,
+                    intent="migration",
+                )
                 plan_path, _ = _migration_paths(engine, root)
                 legacy = root / ".ai-verse-memory"
                 if plan_path.exists():
@@ -1403,7 +1544,12 @@ def apply(engine) -> None:
     ).parent
     engine.public_beta_standalone_home = lambda root: _standalone_home(engine, Path(root))
     engine.public_beta_authority_file = lambda root, mode: _authority_file(engine, Path(root), mode)
-    engine.public_beta_assert_writable_authority = lambda root, mode: _assert_writable_authority(engine, Path(root), mode)
+    engine.public_beta_assert_writable_authority = lambda root, mode, intent="normal": _assert_writable_authority(
+        engine, Path(root), mode, intent=intent
+    )
+    engine.public_beta_native_write_readiness = lambda root: _native_write_readiness(
+        engine, Path(root)
+    )
     engine.public_beta_component_state_path = lambda root, mode: component_state_path(engine, Path(root), mode)
     engine.public_beta_read_component_state = lambda root, mode: read_component_state(engine, Path(root), mode)
     engine.public_beta_write_component_state = lambda root, mode, **changes: write_component_state(

@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from tests.native_lifecycle_fixture import mark_native_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("ai_verse_memory", ROOT / "scripts" / "memory.py")
@@ -112,6 +113,7 @@ class NativeMemoryTests(unittest.TestCase):
         os.environ["AI_VERSE_MEMORY_ROOT"] = str(self.root)
         os.environ.pop("AI_VERSE_MEMORY_HOME", None)
         self._make_native_fixture()
+        mark_native_ready(self.root, mem)
         mem.ensure_layout(self.root, mem.MODE_NATIVE)
         mem.rebuild(silent=True, root=self.root, mode=mem.MODE_NATIVE)
 
