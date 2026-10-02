@@ -217,7 +217,7 @@ class PublicBetaHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._native_root(Path(tmp))
             state = root / "operator" / "memory" / ".ai-verse-memory-state"
-            state.mkdir(parents=True)
+            state.mkdir(parents=True, exist_ok=True)
             lock = state / "mutation.lock"
             lock.write_text(
                 json.dumps(
@@ -253,7 +253,7 @@ class PublicBetaHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._native_root(Path(tmp))
             state = root / "operator" / "memory" / ".ai-verse-memory-state"
-            state.mkdir(parents=True)
+            state.mkdir(parents=True, exist_ok=True)
             lock = state / "mutation.lock"
             lock.write_text(
                 json.dumps({"schema_version": 1, "pid": 999999999, "created_at": "2000-01-01T00:00:00+00:00"}) + "\n",
