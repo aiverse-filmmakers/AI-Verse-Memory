@@ -1,0 +1,34 @@
+name: WSA-2026-014 Repair Patcher
+
+on:
+  push:
+    branches:
+      - repair/wsa-2026-014-memory-handoff-atomicity
+    paths:
+      - ".github/workflows/_wsa-2026-014-patch.yml"
+      - "scripts/wsa_2026_014_patch.py"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: repair/wsa-2026-014-memory-handoff-atomicity
+          fetch-depth: 0
+      - name: Apply bounded repair patch
+        run: python scripts/wsa_2026_014_patch.py
+      - name: Validate syntax
+        run: python -m py_compile scripts/public_beta.py
+      - name: Commit repair
+        shell: bash
+        run: |
+          git config user.name "AI-VERSE"
+          git config user.email "hello@bogdanpascal.com"
+          git add scripts/public_beta.py
+          git diff --cached --exit-code && { echo "No repair patch produced"; exit 1; }
+          git commit -m "Implement WSA-2026-014 failure-atomic Memory handoff"
+          git push origin HEAD:repair/wsa-2026-014-memory-handoff-atomicity
