@@ -1,0 +1,38 @@
+name: WSA-2026-014 Recovery Refinement Fix
+
+on:
+  push:
+    branches:
+      - repair/wsa-2026-014-memory-handoff-atomicity
+    paths:
+      - ".github/workflows/_wsa-2026-014-refine-fix.yml"
+      - "scripts/wsa_2026_014_refine_fix.py"
+
+permissions:
+  contents: write
+
+jobs:
+  refine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: repair/wsa-2026-014-memory-handoff-atomicity
+          fetch-depth: 0
+      - name: Apply recovery refinement and preservation fix
+        run: python scripts/wsa_2026_014_refine_fix.py
+      - name: Compile refined repair
+        run: |
+          python -m py_compile scripts/public_beta.py
+          python -m py_compile tests/test_migration_handoff_atomicity.py
+      - name: Run focused regressions before committing
+        run: python -m unittest -v tests.test_migration_handoff_atomicity
+      - name: Commit refinement
+        shell: bash
+        run: |
+          git config user.name "AI-VERSE"
+          git config user.email "hello@bogdanpascal.com"
+          git add scripts/public_beta.py tests/test_migration_handoff_atomicity.py
+          git diff --cached --exit-code && { echo "No refinement produced"; exit 1; }
+          git commit -m "Handle source drift after prepared Memory handoff crash"
+          git push origin HEAD:repair/wsa-2026-014-memory-handoff-atomicity
