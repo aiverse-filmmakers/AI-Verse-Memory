@@ -1,0 +1,29 @@
+name: Migration Handoff Atomicity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  handoff-atomicity:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile handoff implementation and regressions
+        run: |
+          python -m py_compile scripts/public_beta.py
+          python -m py_compile tests/test_migration_handoff_atomicity.py
+      - name: Prove failure-atomic authority handoff and recovery
+        run: python -m unittest -v tests.test_migration_handoff_atomicity
