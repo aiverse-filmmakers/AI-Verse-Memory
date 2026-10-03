@@ -145,6 +145,50 @@ class MigrationHandoffAtomicityTests(unittest.TestCase):
                 self.assertEqual(replay_receipt["handoff_id"], handoff_id)
                 self.assertIs(replay_receipt["source_retirement_verified"], True)
 
+    def test_prepared_crash_allows_reviewed_replan_if_source_changes_before_fencing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target, _, _, _ = self._setup(Path(tmp))
+            mem._public_beta._HANDOFF_FAULT_INJECTOR = self._inject("after-target-prepared")
+            try:
+                with self.assertRaisesRegex(RuntimeError, "injected handoff fault: after-target-prepared"):
+                    mem.migrate_legacy(target, apply=True, source_root=source)
+            finally:
+                mem._public_beta._HANDOFF_FAULT_INJECTOR = None
+
+            native_authority = mem.public_beta_authority_file(target, mem.MODE_NATIVE)
+            stale = json.loads(native_authority.read_text(encoding="utf-8"))
+            stale_handoff_id = stale["handoff_id"]
+            self.assertEqual(stale["status"], "prepared")
+            self.assertFalse(self._target_normal_writable(target))
+            self.assertFalse((source / ".ai-verse-memory" / "AUTHORITY.json").exists())
+
+            _, _, created = mem.write_atomic(
+                "source changed after target-only prepared crash",
+                "fact",
+                "global",
+                source="standalone:wsa-014-replan",
+                root=source,
+                mode=mem.MODE_STANDALONE,
+            )
+            self.assertTrue(created)
+
+            replanned = mem.migrate_legacy(target, apply=False, source_root=source)
+            self.assertEqual(replanned["migratable"], 1)
+            recovered = mem.migrate_legacy(target, apply=True, source_root=source)
+            self.assertEqual(recovered["handoff_complete"], 1)
+
+            final = json.loads(native_authority.read_text(encoding="utf-8"))
+            self.assertEqual(final["status"], "complete")
+            self.assertIs(final["source_retirement_verified"], True)
+            self.assertNotEqual(final["handoff_id"], stale_handoff_id)
+            self.assertEqual(final["replaced_prepared_handoff_id"], stale_handoff_id)
+            source_authority = json.loads(
+                (source / ".ai-verse-memory" / "AUTHORITY.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(source_authority["handoff_id"], final["handoff_id"])
+            self.assertEqual(source_authority["status"], "retired")
+            self.assertTrue(self._target_normal_writable(target))
+
     def test_old_premature_complete_receipt_is_fenced_and_recovered(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, target, _, _, writer = self._setup(Path(tmp))

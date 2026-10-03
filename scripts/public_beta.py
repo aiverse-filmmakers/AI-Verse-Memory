@@ -1345,7 +1345,7 @@ def _retire_legacy_authority(engine, root: Path, snapshot: dict, counts: dict) -
         payload = dict(identity)
         payload["status"] = status
         if current:
-            for key in ("prepared_at", "pending_at"):
+            for key in ("prepared_at", "pending_at", "replaced_prepared_handoff_id"):
                 if current.get(key):
                     payload[key] = current[key]
             if current.get("recovered_from_unverified_complete"):
@@ -1384,23 +1384,41 @@ def _retire_legacy_authority(engine, root: Path, snapshot: dict, counts: dict) -
             native = native_payload("prepared", prepared_at=_now_iso())
             _atomic_write_json(native_authority, native)
         else:
-            validate_identity(native, "native Memory handoff")
             status = str(native.get("status") or "")
-            if status == "complete" and native.get("source_retirement_verified") is True:
+            if status == "prepared" and native.get("handoff_id") != handoff_id:
+                # A crash immediately after target preparation intentionally leaves
+                # the source as the sole writable authority. If that authoritative
+                # source changes before retry, a newly reviewed dry run gets a new
+                # fingerprint/handoff identity. The stale target-only prepared
+                # reservation can be replaced only while no source-side handoff
+                # marker exists, so no committed/fenced authority is discarded.
                 source = _read_authority_json(source_authority, "legacy Memory authority marker")
-                if not source or source.get("status") != "retired" or source.get("handoff_id") != handoff_id:
-                    raise RuntimeError("Completed native handoff is missing matching retired source authority")
-                return native
-            if status == "complete":
+                if source is not None:
+                    raise RuntimeError("Cannot replace stale prepared handoff after source-side handoff state exists")
+                replaced_handoff_id = str(native.get("handoff_id") or "")
                 native = native_payload(
-                    "pending",
-                    native,
-                    pending_at=native.get("pending_at") or _now_iso(),
-                    recovered_from_unverified_complete=True,
+                    "prepared",
+                    prepared_at=_now_iso(),
+                    replaced_prepared_handoff_id=replaced_handoff_id,
                 )
                 _atomic_write_json(native_authority, native)
-            elif status not in {"prepared", "pending"}:
-                raise RuntimeError(f"Unsupported native Memory handoff state: {status or 'missing'}")
+            else:
+                validate_identity(native, "native Memory handoff")
+                if status == "complete" and native.get("source_retirement_verified") is True:
+                    source = _read_authority_json(source_authority, "legacy Memory authority marker")
+                    if not source or source.get("status") != "retired" or source.get("handoff_id") != handoff_id:
+                        raise RuntimeError("Completed native handoff is missing matching retired source authority")
+                    return native
+                if status == "complete":
+                    native = native_payload(
+                        "pending",
+                        native,
+                        pending_at=native.get("pending_at") or _now_iso(),
+                        recovered_from_unverified_complete=True,
+                    )
+                    _atomic_write_json(native_authority, native)
+                elif status not in {"prepared", "pending"}:
+                    raise RuntimeError(f"Unsupported native Memory handoff state: {status or 'missing'}")
 
         _handoff_fault("after-target-prepared")
 
