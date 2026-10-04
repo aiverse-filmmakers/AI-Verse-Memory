@@ -1,7 +1,7 @@
 {
   "name": "ai-verse-memory",
   "display_name": "AI-Verse Memory",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0-beta.2.dev0",
   "description": "Local-first historical Memory with native AI-Verse OS ownership, provenance, safe adoption, and rebuildable SQLite recall.",
   "license": "MIT",
   "author": "AI-VERSE",

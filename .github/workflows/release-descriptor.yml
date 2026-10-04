@@ -39,9 +39,14 @@ jobs:
               assert d["state"][key] is True
           for key in ("grants_permissions","changes_direction_owner","changes_scope","enables_disabled_component","exposes_remote_listener"):
               assert d["authority"][key] is False
-          for group in ("ci","acceptance"):
-              assert d["evidence"][group]
-              assert all(e["status"]=="pass" and e["revision"]==d["revision"] for e in d["evidence"][group])
+          if d["release_status"] == "accepted":
+              for group in ("ci","acceptance"):
+                  assert d["evidence"][group]
+                  assert all(e["status"]=="pass" and e["revision"]==d["revision"] for e in d["evidence"][group])
+          elif d["release_status"] == "development":
+              assert d["evidence"] == {"ci": [], "acceptance": []}
+          else:
+              raise AssertionError("unknown release status")
           print("descriptor structure OK", d["component_id"], d["version"], d["revision"])
           PY
           REVISION="$(python -c 'import json; print(json.load(open("release/component-release.json"))["revision"])')"

@@ -2,7 +2,7 @@
 
 AI-Verse Memory is a local-first historical memory component for AI agents and AI operating systems. Canonical historical memory stays human-readable Markdown. SQLite is derived, disposable recall state.
 
-Current public-beta version: **0.3.0-beta.1**.
+Current development version: **0.3.0-beta.2.dev0**. The accepted beta.1 artifact remains pinned to its immutable revision.
 
 In AI-Verse OS v2, current profile, context, decisions, workspace topology, and knowledge keep their existing owners. Memory owns historical atomic memory, provenance, corrections, experiences, and lessons. Memory does not own Skills or Brain strategy.
 

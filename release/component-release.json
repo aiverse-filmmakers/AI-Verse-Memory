@@ -1,9 +1,9 @@
 {
   "schema_version": "ai-verse.component-release/v1",
   "component_id": "ai-verse-memory",
-  "version": "0.3.0-beta.1",
-  "revision": "031e1e77c97ed3c9012235c7ffe0a4ece05e3695",
-  "release_status": "accepted",
+  "version": "0.3.0-beta.2.dev0",
+  "revision": "3f715bf43c8dc5f0ad8888e07d857b581482569e",
+  "release_status": "development",
   "package": {
     "repository": "aiverse-filmmakers/AI-Verse-Memory",
     "source_type": "git",
@@ -52,24 +52,8 @@
     "exposes_remote_listener": false
   },
   "evidence": {
-    "ci": [
-      {
-        "kind": "distribution-core-ci",
-        "status": "pass",
-        "revision": "031e1e77c97ed3c9012235c7ffe0a4ece05e3695",
-        "run_id": "34782949282",
-        "url": "https://github.com/aiverse-filmmakers/ai-verse-distribution/actions/runs/34782949282"
-      }
-    ],
-    "acceptance": [
-      {
-        "kind": "distribution-core-clean-machine",
-        "status": "pass",
-        "revision": "031e1e77c97ed3c9012235c7ffe0a4ece05e3695",
-        "run_id": "34782949287",
-        "url": "https://github.com/aiverse-filmmakers/ai-verse-distribution/actions/runs/34782949287"
-      }
-    ]
+    "ci": [],
+    "acceptance": []
   },
   "semantics": {
     "release_metadata_only": true,
