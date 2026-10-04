@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-VERSION = "0.3.0-beta.1"
+VERSION = "0.3.0-beta.2.dev0"
 DEFAULT_SOURCE_REF = os.getenv("AI_VERSE_MEMORY_RELEASE_REF", "main").strip() or "main"
 BASE_URL = os.getenv(
     "AI_VERSE_MEMORY_BASE_URL",

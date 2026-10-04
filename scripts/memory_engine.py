@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-VERSION = "0.3.0-beta.1"
+VERSION = "0.3.0-beta.2.dev0"
 MODE_NATIVE = "ai-verse-os-v2"
 MODE_STANDALONE = "standalone"
 

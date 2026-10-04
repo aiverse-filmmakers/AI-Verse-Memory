@@ -1,7 +1,7 @@
 ---
 name: ai-verse-memory
 description: Operate AI-Verse Memory as scoped historical memory. In AI-Verse OS v2 it stores historical atomics in host-owned Memory layers and indexes selected current canonical sources in place; elsewhere it uses the standalone .ai-verse-memory layout.
-version: 0.3.0-beta.1
+version: 0.3.0-beta.2.dev0
 author: AI-VERSE
 license: MIT
 platforms: [linux, macos, windows]
