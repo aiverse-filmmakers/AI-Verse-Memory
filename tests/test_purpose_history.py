@@ -78,6 +78,15 @@ class PurposeHistoryTests(unittest.TestCase):
             "version": "3",
         }
 
+    def test_public_memory_wrapper_exposes_reader(self):
+        spec = importlib.util.spec_from_file_location("_purpose_history_public_memory", ROOT / "scripts" / "memory.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        self.assertTrue(callable(module.read_purpose_history))
+        self.assertEqual(module.PURPOSE_HISTORY_VERSION, "memory.purpose-history.v1")
+
     def test_returns_recent_scoped_memory_only(self):
         result = self.engine.read_purpose_history(
             scope="workspace:film",
