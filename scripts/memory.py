@@ -418,6 +418,14 @@ def recall(
 # compatibility-gated implementation above. The public wrapper exports it too.
 _engine.recall = recall
 
+_purpose_history = _load_sibling("_aiverse_memory_purpose_history", "purpose_history.py")
+_purpose_history.apply(_engine)
+read_purpose_history = _engine.read_purpose_history
+PURPOSE_HISTORY_VERSION = _engine.PURPOSE_HISTORY_VERSION
+PURPOSE_HISTORY_DEFAULT_LIMIT = _engine.PURPOSE_HISTORY_DEFAULT_LIMIT
+PURPOSE_HISTORY_MAX_LIMIT = _engine.PURPOSE_HISTORY_MAX_LIMIT
+PURPOSE_HISTORY_DEFAULT_MAX_BYTES = _engine.PURPOSE_HISTORY_DEFAULT_MAX_BYTES
+
 
 def mode_report(root: Path) -> None:
     result = detect_os_compatibility(root)
