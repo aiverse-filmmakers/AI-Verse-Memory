@@ -104,7 +104,35 @@ def _validate(
     return refs, query, limit, max_bytes, max_age_days
 
 
+def _memory_provenance(row) -> Optional[tuple[Dict[str, str], Dict[str, str]]]:
+    mem_id = str(_row_value(row, "id")).strip()
+    scope = str(_row_value(row, "scope")).strip()
+    source_identity = str(_row_value(row, "source_identity")).strip()
+    source_version = str(_row_value(row, "source_version")).strip()
+    freshness = str(_row_value(row, "freshness")).strip()
+    if not all((mem_id, scope, source_identity, source_version, freshness)):
+        return None
+    source_ref = {
+        "owner": "ai-verse-memory",
+        "scope": scope,
+        "kind": "memory",
+        "id": mem_id,
+        "version": source_version,
+    }
+    provenance = {
+        "owner": "ai-verse-memory",
+        "source_identity": source_identity,
+        "source_version": source_version,
+        "freshness": freshness,
+    }
+    return source_ref, provenance
+
+
 def _history_item(row) -> Dict[str, Any]:
+    provenance = _memory_provenance(row)
+    if provenance is None:
+        raise ValueError("Purpose history row is missing canonical Memory provenance")
+    source_ref, memory_provenance = provenance
     text = str(_row_value(row, "text"))
     clipped = len(text) > EXCERPT_CHARS
     excerpt = text[:EXCERPT_CHARS].rstrip()
@@ -116,6 +144,8 @@ def _history_item(row) -> Dict[str, Any]:
         "scope": str(_row_value(row, "scope")),
         "occurred_at": str(_row_value(row, "updated_at") or _row_value(row, "created_at")),
         "excerpt": excerpt,
+        "source_refs": [source_ref],
+        "provenance": memory_provenance,
     }
     if clipped:
         item["content_truncated"] = True
@@ -168,6 +198,8 @@ def apply(engine) -> None:
             if str(_row_value(row, "kind")) != "memory":
                 continue
             if str(_row_value(row, "scope")) != scope:
+                continue
+            if _memory_provenance(row) is None:
                 continue
             occurred = _parse_time(_row_value(row, "updated_at") or _row_value(row, "created_at"))
             if occurred is None or occurred < cutoff or occurred > observed:
