@@ -13,19 +13,33 @@ sys.modules[SPEC.name] = PURPOSE_HISTORY
 SPEC.loader.exec_module(PURPOSE_HISTORY)
 
 
+def memory_row(*, mem_id, mem_type, scope, text, updated_at, created_at=""):
+    return {
+        "id": mem_id,
+        "kind": "memory",
+        "type": mem_type,
+        "scope": scope,
+        "text": text,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "source_identity": f"sha256:{mem_id}-identity",
+        "source_version": f"sha256:{mem_id}-version",
+        "freshness": "historical",
+    }
+
+
 class FakeEngine:
     def __init__(self):
         self.calls = []
         self.rows = [
-            {
-                "id": "recent-2",
-                "kind": "memory",
-                "type": "lesson",
-                "scope": "workspace:film",
-                "text": "The render queue failed until the retry budget was reduced.",
-                "created_at": "2026-10-06T10:00:00+00:00",
-                "updated_at": "2026-10-07T11:00:00+00:00",
-            },
+            memory_row(
+                mem_id="recent-2",
+                mem_type="lesson",
+                scope="workspace:film",
+                text="The render queue failed until the retry budget was reduced.",
+                created_at="2026-10-06T10:00:00+00:00",
+                updated_at="2026-10-07T11:00:00+00:00",
+            ),
             {
                 "id": "current-source",
                 "kind": "context",
@@ -34,31 +48,36 @@ class FakeEngine:
                 "text": "This is current source data, not historical Memory.",
                 "updated_at": "2026-10-07T12:00:00+00:00",
             },
+            memory_row(
+                mem_id="other-workspace",
+                mem_type="lesson",
+                scope="workspace:other",
+                text="Unrelated workspace history.",
+                updated_at="2026-10-07T12:00:00+00:00",
+            ),
+            memory_row(
+                mem_id="recent-1",
+                mem_type="experience",
+                scope="workspace:film",
+                text="A client review changed the delivery order for the film.",
+                created_at="2026-10-07T10:00:00+00:00",
+                updated_at="2026-10-07T10:00:00+00:00",
+            ),
             {
-                "id": "other-workspace",
-                "kind": "memory",
-                "type": "lesson",
-                "scope": "workspace:other",
-                "text": "Unrelated workspace history.",
-                "updated_at": "2026-10-07T12:00:00+00:00",
-            },
-            {
-                "id": "recent-1",
-                "kind": "memory",
-                "type": "experience",
-                "scope": "workspace:film",
-                "text": "A client review changed the delivery order for the film.",
-                "created_at": "2026-10-07T10:00:00+00:00",
-                "updated_at": "2026-10-07T10:00:00+00:00",
-            },
-            {
-                "id": "old",
+                "id": "missing-provenance",
                 "kind": "memory",
                 "type": "lesson",
                 "scope": "workspace:film",
-                "text": "Old historical context outside the configured recent window.",
-                "updated_at": "2025-01-01T00:00:00+00:00",
+                "text": "A Memory result without canonical source state must not cross the owner surface.",
+                "updated_at": "2026-10-07T09:30:00+00:00",
             },
+            memory_row(
+                mem_id="old",
+                mem_type="lesson",
+                scope="workspace:film",
+                text="Old historical context outside the configured recent window.",
+                updated_at="2025-01-01T00:00:00+00:00",
+            ),
         ]
 
     def recall(self, query, **kwargs):
@@ -87,7 +106,7 @@ class PurposeHistoryTests(unittest.TestCase):
         self.assertTrue(callable(module.read_purpose_history))
         self.assertEqual(module.PURPOSE_HISTORY_VERSION, "memory.purpose-history.v1")
 
-    def test_returns_recent_scoped_memory_only(self):
+    def test_returns_recent_scoped_memory_only_with_canonical_provenance(self):
         result = self.engine.read_purpose_history(
             scope="workspace:film",
             purpose_refs=[self.ref],
@@ -104,7 +123,31 @@ class PurposeHistoryTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in result["history"]], ["recent-2", "recent-1"])
         self.assertFalse(any(item["id"] == "current-source" for item in result["history"]))
         self.assertFalse(any(item["id"] == "other-workspace" for item in result["history"]))
+        self.assertFalse(any(item["id"] == "missing-provenance" for item in result["history"]))
         self.assertFalse(any(item["id"] == "old" for item in result["history"]))
+
+        first = result["history"][0]
+        self.assertEqual(
+            first["source_refs"],
+            [{
+                "owner": "ai-verse-memory",
+                "scope": "workspace:film",
+                "kind": "memory",
+                "id": "recent-2",
+                "version": "sha256:recent-2-version",
+            }],
+        )
+        self.assertEqual(
+            first["provenance"],
+            {
+                "owner": "ai-verse-memory",
+                "source_identity": "sha256:recent-2-identity",
+                "source_version": "sha256:recent-2-version",
+                "freshness": "historical",
+            },
+        )
+        self.assertNotIn("path", first)
+        self.assertNotIn("path", first["provenance"])
         self.assertLessEqual(len(json.dumps(result, ensure_ascii=False).encode("utf-8")), 4096)
 
         query, kwargs = self.engine.calls[0]
@@ -117,14 +160,13 @@ class PurposeHistoryTests(unittest.TestCase):
 
     def test_is_deterministic_and_hard_bounded(self):
         self.engine.rows = [
-            {
-                "id": f"m-{index:02d}",
-                "kind": "memory",
-                "type": "lesson",
-                "scope": "workspace:film",
-                "text": "x" * 2000,
-                "updated_at": f"2026-10-{7 - index:02d}T10:00:00+00:00",
-            }
+            memory_row(
+                mem_id=f"m-{index:02d}",
+                mem_type="lesson",
+                scope="workspace:film",
+                text="x" * 2000,
+                updated_at=f"2026-10-{7 - index:02d}T10:00:00+00:00",
+            )
             for index in range(6)
         ]
         first = self.engine.read_purpose_history(
