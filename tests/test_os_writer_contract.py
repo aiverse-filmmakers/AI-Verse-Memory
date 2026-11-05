@@ -105,6 +105,56 @@ class PinnedOSWriterMemoryContract(unittest.TestCase):
             max_bytes=10000,
         )
 
+    def test_real_os_batch_writer_to_memory_exact_source_and_copy_replay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            archive = self._archive(root, archive_id="batch-writer-fixture")
+            messages = [
+                "batch writer visible one 🧪 中文",
+                "batch writer visible two with line\nsecond",
+                "batch writer visible three after relocation",
+            ]
+            complete = []
+            offset = 0
+            for index, text in enumerate(messages, 1):
+                raw = _raw_event(index, text)
+                complete.append(self.os_writer.ArchiveEvent(
+                    source_event_id=f"immutable-source-{index}",
+                    source_byte_offset=offset,
+                    source_end_offset=offset + len(raw),
+                    source_record_sha256=hashlib.sha256(raw).hexdigest(),
+                    source_record_bytes=raw,
+                    block_index=0,
+                    message_id=f"provider-message-{index}",
+                    sequence=index,
+                    role="user" if index % 2 else "assistant",
+                    text=text,
+                    record_terminated=True,
+                    attachment_availability="not_embedded",
+                ))
+                offset += len(raw)
+            first = archive.append_batch(tuple(complete[:2]))
+            self.assertEqual((first.saved, first.replayed), (2, 0))
+            before = self._detail(root, "batch writer")
+            self.assertEqual(len(before), 2)
+            self.assertEqual([self._source(root, item)["source"]["content"]
+                              for item in before], messages[:2])
+            replay = archive.append_batch(tuple(complete[:2]))
+            self.assertEqual((replay.saved, replay.replayed), (0, 2))
+            moved = Path(tmp) / "copied-batch-os"
+            shutil.copytree(root, moved)
+            shutil.rmtree(root)
+            restored = self._archive(moved, archive_id="batch-writer-fixture")
+            final = restored.append_batch(tuple(complete))
+            self.assertEqual((final.saved, final.replayed), (1, 2))
+            self.assertEqual(final.checkpoint_sequence, 3)
+            self.assertEqual([self._source(moved, item)["source"]["content"]
+                              for item in before], messages[:2])
+            after = self._detail(moved, "batch writer")
+            self.assertEqual(len(after), 3)
+            self.assertEqual([self._source(moved, item)["source"]["content"]
+                              for item in after], messages)
+
     def test_real_os_writer_to_memory_exact_bytes_and_replayed_append(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
