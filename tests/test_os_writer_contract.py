@@ -23,7 +23,7 @@ from tests.test_progressive_recall import mem
 OS_WRITER_RELATIVE = (
     "system/extensions/packages/ai-verse-codex-learning/chat_archive.py"
 )
-OS_WRITER_PIN = "42d20e6bc8cd1aa9d9a97f2f408e2ce6e029f2d1"
+OS_WRITER_PIN = "237f333347ffb5b6f94131c8555f90b22fc39556"
 OS_CHECKOUT = os.environ.get("AI_VERSE_SYNTHETIC_OS_WRITER_ROOT", "")
 
 
