@@ -95,6 +95,14 @@ def _safe_components(root: Path, path: Path) -> None:
             raise ArchiveSourceBlocked("archive source permissions are not private")
 
 
+def _stat_identity(info) -> tuple:
+    # Windows creation/change-time metadata is not stable across a copied or
+    # reopened file. Device/inode, length and modification time are checked
+    # on every read; the per-message SHA-256 remains the content authority.
+    common = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    return common if os.name == "nt" else common + (info.st_ctime_ns,)
+
+
 def _read_bytes(root: Path, path: Path) -> bytes:
     _safe_components(root, path)
     before = path.lstat()
@@ -108,22 +116,19 @@ def _read_bytes(root: Path, path: Path) -> bytes:
     try:
         initial = os.fstat(fd)
         if (not stat.S_ISREG(initial.st_mode)
-                or (initial.st_dev, initial.st_ino) != (before.st_dev, before.st_ino)):
+                or _stat_identity(initial) != _stat_identity(before)):
             raise ArchiveSourceBlocked("archive file changed during open")
         with os.fdopen(fd, "rb", closefd=False) as stream:
             data = stream.read(MAX_ARCHIVE_BYTES + 1)
         after = os.fstat(fd)
         if (len(data) > MAX_ARCHIVE_BYTES or len(data) != initial.st_size
-                or (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-                != (initial.st_size, initial.st_mtime_ns, initial.st_ctime_ns)):
+                or _stat_identity(after) != _stat_identity(initial)):
             raise ArchiveSourceBlocked("archive changed during read")
         try:
             final = path.lstat()
         except OSError:
             raise ArchiveSourceBlocked("archive was deleted during read") from None
-        if (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns,
-                final.st_ctime_ns) != (initial.st_dev, initial.st_ino, initial.st_size,
-                                       initial.st_mtime_ns, initial.st_ctime_ns):
+        if _stat_identity(final) != _stat_identity(initial):
             raise ArchiveSourceBlocked("archive was replaced during read")
         _safe_components(root, path)
         return data
