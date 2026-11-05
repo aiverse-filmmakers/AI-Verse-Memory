@@ -462,8 +462,19 @@ def exact(engine, root: Path, mode: str, ref: Mapping[str, Any], *,
         return "unavailable", None, "archive_directory_missing"
     try:
         records = _parse_archive(_read_bytes(root, stored), selected, aid)
-    except ArchiveSourceBlocked:
+    except (ArchiveSourceBlocked, OSError):
+        # A file may disappear or change midway through a direct read.
+        # Never substitute another archive or return cached visible text.
+        # Revocation and unsafe scope-directory changes are NOT local errors.
+        _source_scope(engine, root, mode, selected,
+                      requested_scope=scope, workspace=workspace)
+        if not _folder_safe(root, stored.parent):
+            raise ArchiveSourceBlocked("archive scope folder disappeared")
         return "unavailable", None, "archive_unavailable_or_invalid"
+    _source_scope(engine, root, mode, selected,
+                  requested_scope=scope, workspace=workspace)
+    if not _folder_safe(root, stored.parent):
+        raise ArchiveSourceBlocked("archive scope folder disappeared")
     match = next((row for row in records if row["source_event_id"] == eid), None)
     if match is None:
         return "unavailable", None, "message_deleted_from_archive"
