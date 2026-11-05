@@ -265,7 +265,9 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
             original = reader._read_bytes
 
             def raced_read(os_root, candidate):
-                if candidate == raced:
+                # Windows root paths can be normalized differently by the
+                # Memory API; this unique fixture basename is stable there.
+                if candidate.name == raced.name:
                     raise FileNotFoundError("sensitive-race-client")
                 return original(os_root, candidate)
 
