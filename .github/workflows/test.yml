@@ -28,6 +28,7 @@ jobs:
           python -m py_compile scripts/session_promotion.py
           python -m py_compile scripts/orientation_map.py
           python -m py_compile scripts/progressive_recall.py
+          python -m py_compile scripts/chat_archive_sources.py
           python -m py_compile scripts/relationship_projection.py
           python -m py_compile scripts/neighbor_recall_benchmark.py
           python -m py_compile scripts/component.py
