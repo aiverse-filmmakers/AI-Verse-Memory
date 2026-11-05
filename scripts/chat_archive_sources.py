@@ -8,6 +8,7 @@ persistent indexes. Per-message checksums remain stable when JSONL is appended.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,9 @@ MAX_ARCHIVES = 128
 MAX_RECORDS_PER_ARCHIVE = 20000
 MAX_ARCHIVE_BYTES = 8_000_000
 MAX_TOTAL_MESSAGES = 40000
+MAX_DIAGNOSTIC_COUNT = 128
+# Fixed, count-only categories. Never report filenames, paths, IDs or content.
+_DIAGNOSTIC_KINDS = ("invalid", "oversized", "raced", "unavailable")
 FIELDS = {
     "kind", "schema", "archive_id", "scope", "origin", "session_id",
     "source_event_id", "source_byte_offset", "source_end_offset",
@@ -279,7 +283,42 @@ def _folder_safe(root: Path, folder: Path) -> bool:
     return True
 
 
-def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None):
+def _archive_failure_kind(exc: BaseException) -> str:
+    """Only static category labels leave the isolated archive read."""
+    if isinstance(exc, OSError):
+        return "raced"
+    description = str(exc)
+    if description in {"archive source exceeds read budget",
+                       "too many archive records"}:
+        return "oversized"
+    if description in {"archive file changed during open",
+                       "archive changed during read",
+                       "archive was deleted during read",
+                       "archive was replaced during read"}:
+        return "raced"
+    if description in {"archive cannot be opened", "archive path is missing",
+                       "archive is not a regular file",
+                       "symlink archive component refused",
+                       "archive source permissions are not private"}:
+        return "unavailable"
+    return "invalid"
+
+
+def _note_archive_failure(diagnostics: dict | None, exc: BaseException) -> None:
+    """Saturating counters only; never paths, exception messages or data."""
+    if diagnostics is None:
+        return
+    kind = _archive_failure_kind(exc)
+    for key in ("skipped", kind):
+        count = diagnostics.get(key, 0)
+        if count >= MAX_DIAGNOSTIC_COUNT:
+            diagnostics["saturated"] = True
+        else:
+            diagnostics[key] = count + 1
+
+
+def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
+              diagnostics: dict | None = None):
     if mode != engine.MODE_NATIVE:
         return []
     visible, _ = engine.allowed_scopes(
@@ -294,29 +333,54 @@ def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None):
         if not _folder_safe(root, folder):
             continue
         try:
-            files = sorted(folder.iterdir(), key=lambda p: p.name)
+            # Do not eagerly list an unbounded directory. Retain the old
+            # MAX_ARCHIVES limit even when most entries are lock files.
+            files = list(itertools.islice(folder.iterdir(), MAX_ARCHIVES + 1))
         except OSError:
             raise ArchiveSourceBlocked("private archive folder cannot be listed") from None
         if len(files) > MAX_ARCHIVES:
             raise ArchiveSourceBlocked("archive source count exceeds budget")
-        for path in files:
+        for path in sorted(files, key=lambda p: p.name):
             if not ID.fullmatch(path.stem) or path.suffix != ".jsonl":
                 # Lock files and other extension-owned private files are not sources.
                 continue
-            records = _parse_archive(_read_bytes(root, path), selected, path.stem)
+            try:
+                records = _parse_archive(_read_bytes(root, path), selected, path.stem)
+            except (ArchiveSourceBlocked, OSError) as exc:
+                # Only ONE file may be skipped. Re-check the authoritative
+                # scope and containing folder before suppressing a local error.
+                # Scope denial or a directory race is never an archive-local
+                # failure and must terminate the whole request.
+                _source_scope(engine, root, mode, selected,
+                              requested_scope=scope, workspace=workspace)
+                if not _folder_safe(root, folder):
+                    raise ArchiveSourceBlocked("archive scope folder disappeared")
+                _note_archive_failure(diagnostics, exc)
+                continue
+            _source_scope(engine, root, mode, selected,
+                          requested_scope=scope, workspace=workspace)
+            if not _folder_safe(root, folder):
+                raise ArchiveSourceBlocked("archive scope folder disappeared")
+            if len(result) + len(records) > MAX_TOTAL_MESSAGES:
+                raise ArchiveSourceBlocked("chat source scan budget exceeded")
             rel = path.relative_to(root).as_posix()
             for record in records:
                 result.append({"scope": selected, "path": rel,
                                "archive_id": path.stem, **record})
-                if len(result) > MAX_TOTAL_MESSAGES:
-                    raise ArchiveSourceBlocked("chat source scan budget exceeded")
+        # Authorization changes during enumeration cannot release old results.
+        _source_scope(engine, root, mode, selected,
+                      requested_scope=scope, workspace=workspace)
+        if not _folder_safe(root, folder):
+            raise ArchiveSourceBlocked("archive scope folder disappeared")
     return result
 
 
 def discover(engine, root: Path, mode: str, *, scope=None, workspace=None,
-             query: str = "", limit: int = 20) -> tuple[list[dict], int]:
+             query: str = "", limit: int = 20,
+             diagnostics: dict | None = None) -> tuple[list[dict], int]:
     """Rebuildable, read-only discovery: no persistent chat index."""
-    rows = _archives(engine, root, mode, scope=scope, workspace=workspace)
+    rows = _archives(engine, root, mode, scope=scope, workspace=workspace,
+                     diagnostics=diagnostics)
     if not query:
         return rows[:max(0, limit)], len(rows)
     terms = [part.casefold() for part in re.findall(r"\w+", query, re.UNICODE)]
