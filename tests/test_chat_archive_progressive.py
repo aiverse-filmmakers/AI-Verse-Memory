@@ -298,6 +298,33 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
                              "portable healthy result stays retrievable")
             self.assertTrue(healthy.is_file())
 
+    def test_unhashable_and_invalid_unicode_records_isolated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            write_archive(root, "workspace:alpha",
+                          archive_id="healthy-unicode-control",
+                          texts=["portable healthy comparison"])
+            unhashable, _ = write_archive(root, "workspace:alpha",
+                                          archive_id="bad-role-type",
+                                          texts=["portable poisoned role"])
+            raw = unhashable.read_bytes().splitlines()
+            invalid_role = json.loads(raw[1])
+            invalid_role["role"] = ["user"]
+            unhashable.write_bytes(raw[0] + b"\n" + packed(invalid_role) + b"\n")
+            surrogate, _ = write_archive(root, "workspace:alpha",
+                                          archive_id="bad-surrogate",
+                                          texts=["portable poisoned surrogate"])
+            surrogate.write_bytes(surrogate.read_bytes().replace(
+                b"portable poisoned surrogate", b"\\ud800",
+            ))
+            result = self._call(root, "detail", "portable healthy")
+            health = result["provenance"]["archive_skips"]
+            self.assertEqual(health, {"skipped": 2, "invalid": 2})
+            matches = [i for i in result["items"]
+                       if i["record_type"] == "portable_chat_message"]
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(self._source(root, matches[0])["status"], "ok")
+
     def test_bad_exact_source_unavailable_while_another_archive_is_healthy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
