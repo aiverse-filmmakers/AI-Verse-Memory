@@ -182,8 +182,10 @@ def _parse_archive(raw: bytes, scope: str, archive_id: str) -> list[dict]:
                 or item["source_end_offset"] <= item["source_byte_offset"]):
             raise ArchiveSourceBlocked("archive source sequence or offsets invalid")
         if (not isinstance(item.get("text"), str)
-                or item.get("role") not in {"user", "assistant"}
-                or item.get("attachment_availability") not in
+                or not isinstance(item.get("role"), str)
+                or item["role"] not in {"user", "assistant"}
+                or not isinstance(item.get("attachment_availability"), str)
+                or item["attachment_availability"] not in
                     {"none", "not_embedded", "unknown"}):
             raise ArchiveSourceBlocked("archive includes unsupported non-visible record")
         for k in ("source_event_id", "message_id"):
@@ -346,7 +348,7 @@ def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
                 continue
             try:
                 records = _parse_archive(_read_bytes(root, path), selected, path.stem)
-            except (ArchiveSourceBlocked, OSError) as exc:
+            except (ArchiveSourceBlocked, OSError, UnicodeError) as exc:
                 # Only ONE file may be skipped. Re-check the authoritative
                 # scope and containing folder before suppressing a local error.
                 # Scope denial or a directory race is never an archive-local
@@ -462,7 +464,7 @@ def exact(engine, root: Path, mode: str, ref: Mapping[str, Any], *,
         return "unavailable", None, "archive_directory_missing"
     try:
         records = _parse_archive(_read_bytes(root, stored), selected, aid)
-    except (ArchiveSourceBlocked, OSError):
+    except (ArchiveSourceBlocked, OSError, UnicodeError):
         # A file may disappear or change midway through a direct read.
         # Never substitute another archive or return cached visible text.
         # Revocation and unsafe scope-directory changes are NOT local errors.
