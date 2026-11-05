@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from tests.native_lifecycle_fixture import mark_native_ready
 from tests.test_progressive_recall import mem
@@ -234,6 +235,150 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
             except (OSError, NotImplementedError):
                 self.skipTest("symlink fixtures unsupported")
             self.assertEqual(self._source(root, detail)["status"], "unavailable")
+
+    def test_mixed_healthy_malformed_oversized_and_raced_archives_survive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            healthy, _ = write_archive(
+                root, "workspace:alpha", archive_id="healthy-public-contract",
+                texts=["portable healthy result stays retrievable"],
+            )
+            invalid, _ = write_archive(
+                root, "workspace:alpha", archive_id="sensitive-invalid-client",
+                texts=["SENSITIVE_MALFORMED_BODY_DO_NOT_ECHO"],
+            )
+            oversized, _ = write_archive(
+                root, "workspace:alpha", archive_id="sensitive-too-large-client",
+                texts=["SENSITIVE_OVERSIZE_BODY_DO_NOT_ECHO"],
+            )
+            raced, _ = write_archive(
+                root, "workspace:alpha", archive_id="sensitive-race-client",
+                texts=["SENSITIVE_RACE_BODY_DO_NOT_ECHO"],
+            )
+            # Load Memory's actual dynamic reader module from the public API.
+            self._call(root, "catalog")
+            import sys
+            reader = sys.modules["_aiverse_memory_portable_chat_sources"]
+            invalid.write_bytes(b'{"kind":,}\n')
+            with oversized.open("ab") as stream:
+                stream.truncate(reader.MAX_ARCHIVE_BYTES + 1)
+            original = reader._read_bytes
+
+            def raced_read(os_root, candidate):
+                if candidate == raced:
+                    raise FileNotFoundError("sensitive-race-client")
+                return original(os_root, candidate)
+
+            with mock.patch.object(reader, "_read_bytes", side_effect=raced_read):
+                catalog = self._call(root, "catalog")
+                summary = self._call(root, "summary", "portable healthy")
+                detail = self._call(root, "detail", "portable healthy")
+            health = {"skipped": 3, "invalid": 1, "oversized": 1, "raced": 1}
+            for response in (catalog, summary, detail):
+                self.assertEqual(response["provenance"]["archive_skips"], health)
+                serialized = json.dumps(response, ensure_ascii=False)
+                for secret in (
+                    "sensitive-invalid-client", "sensitive-too-large-client",
+                    "sensitive-race-client", "SENSITIVE_MALFORMED_BODY_DO_NOT_ECHO",
+                    "SENSITIVE_OVERSIZE_BODY_DO_NOT_ECHO",
+                    "SENSITIVE_RACE_BODY_DO_NOT_ECHO",
+                ):
+                    self.assertNotIn(secret, serialized)
+            self.assertEqual(
+                catalog["catalog"]["counts"]["portable_chat_messages"], 1
+            )
+            self.assertEqual(summary["candidate_counts"]["portable_chat_messages"], 1)
+            self.assertEqual(detail["candidate_counts"]["portable_chat_messages"], 1)
+            source = self._source(
+                root, next(i for i in detail["items"]
+                           if i["record_type"] == "portable_chat_message")
+            )
+            self.assertEqual(source["status"], "ok")
+            self.assertEqual(source["source"]["content"],
+                             "portable healthy result stays retrievable")
+            self.assertTrue(healthy.is_file())
+
+    def test_bad_exact_source_unavailable_while_another_archive_is_healthy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            healthy, _ = write_archive(
+                root, "workspace:alpha", archive_id="healthy-contract",
+                texts=["portable healthy exact source"],
+            )
+            damaged, _ = write_archive(
+                root, "workspace:alpha", archive_id="damaged-contract",
+                texts=["portable damaged exact source"],
+            )
+            details = self._call(root, "detail", "portable")
+            pointers = {
+                row["evidence"]["archive_id"]: row for row in details["items"]
+                if row["record_type"] == "portable_chat_message"
+            }
+            damaged.write_bytes(b'{"kind":,}\n')
+            self.assertEqual(
+                self._source(root, pointers["damaged-contract"])["status"],
+                "unavailable",
+            )
+            self.assertEqual(
+                self._source(root, pointers["healthy-contract"])["status"],
+                "ok",
+            )
+            self.assertTrue(healthy.exists())
+            response = self._call(root, "detail", "portable")
+            self.assertEqual(response["provenance"]["archive_skips"],
+                             {"skipped": 1, "invalid": 1})
+            self.assertEqual(response["candidate_counts"]["portable_chat_messages"], 1)
+
+    def test_archive_local_failure_never_masks_revoked_workspace_authority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            file, _ = write_archive(root, "workspace:alpha",
+                                    texts=["portable authorization-bound source"])
+            self._call(root, "catalog")
+            import sys
+            reader = sys.modules["_aiverse_memory_portable_chat_sources"]
+            manifest = root / "workspaces/alpha/WORKSPACE.yaml"
+
+            def revoke_while_reading(os_root, candidate):
+                manifest.write_text(
+                    'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n'
+                )
+                raise FileNotFoundError("file vanished under revoked permission")
+
+            with mock.patch.object(reader, "_read_bytes", side_effect=revoke_while_reading):
+                with self.assertRaises(ValueError):
+                    self._call(root, "detail", "portable")
+            self.assertTrue(file.exists())
+
+    def test_global_archive_count_and_message_budgets_remain_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            write_archive(root, "workspace:alpha", archive_id="archive-a",
+                          texts=["portable one", "portable two"])
+            write_archive(root, "workspace:alpha", archive_id="archive-b",
+                          texts=["portable three"])
+            self._call(root, "catalog")
+            import sys
+            reader = sys.modules["_aiverse_memory_portable_chat_sources"]
+            with mock.patch.object(reader, "MAX_ARCHIVES", 1):
+                with self.assertRaises(reader.ArchiveSourceBlocked):
+                    self._call(root, "catalog")
+            with mock.patch.object(reader, "MAX_TOTAL_MESSAGES", 2):
+                with self.assertRaises(reader.ArchiveSourceBlocked):
+                    self._call(root, "detail", "portable")
+            with mock.patch.object(reader, "MAX_DIAGNOSTIC_COUNT", 1):
+                # Diagnostics are saturating but healthy results still survive.
+                damaged, _ = write_archive(root, "workspace:alpha",
+                                           archive_id="archive-invalid",
+                                           texts=["unusable"])
+                damaged.write_bytes(b"not-json\n")
+                other, _ = write_archive(root, "workspace:alpha",
+                                         archive_id="archive-another-invalid",
+                                         texts=["unusable"])
+                other.write_bytes(b"not-json\n")
+                response = self._call(root, "detail", "portable")
+                self.assertEqual(response["provenance"]["archive_skips"],
+                                 {"skipped": 1, "invalid": 1, "saturated": True})
 
     def test_digest_fallback_and_no_archive_preserve_legacy_recall(self):
         with tempfile.TemporaryDirectory() as tmp:
