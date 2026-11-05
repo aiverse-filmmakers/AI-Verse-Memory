@@ -124,6 +124,7 @@ jobs:
           subprocess.run(cmd, check=True, env=env)
           subprocess.run(cmd, check=True, env=env)
           assert (target / ".ai-verse-memory/memory.py").exists()
+          assert (target / ".ai-verse-memory/chat_archive_sources.py").is_file()
           assert (target / "AGENTS.md").read_text().count("AI-VERSE-MEMORY:START") == 1
           assert (target / "CLAUDE.md").read_text().count("AI-VERSE-MEMORY:START") == 1
           subprocess.run([os.sys.executable, str(target / ".ai-verse-memory/memory.py"), "--root", str(target), "doctor"], check=True)
@@ -150,6 +151,7 @@ jobs:
 
           engine = target / "scripts/ai-verse-memory/memory.py"
           assert engine.exists()
+          assert (engine.parent / "chat_archive_sources.py").is_file()
           assert not (target / ".ai-verse-memory").exists()
           assert (target / "AGENTS.md").read_text(encoding="utf-8") == agents_before
           assert (target / "skills/registry.yaml").read_text(encoding="utf-8") == registry_before
