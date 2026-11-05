@@ -1109,14 +1109,19 @@ def _catalog_response(
             },
         }
         if mode == engine.MODE_NATIVE:
+            chat_health = {}
             _, chat_count = _chat_sources().discover(
                 engine, root, mode, scope=scope, workspace=workspace,
-                query="", limit=0,
+                query="", limit=0, diagnostics=chat_health,
             )
             if chat_count:
                 response["catalog"]["counts"]["portable_chat_messages"] = chat_count
                 response["deeper_evidence_available"] = True
                 response["provenance"]["portable_chat_source"] = "ai-verse.chat-archive/v1"
+            if chat_health.get("skipped", 0):
+                # Count-only, saturating error buckets; no source paths,
+                # archive names, message bodies or exception details.
+                response["provenance"]["archive_skips"] = chat_health
         if _serialized_bytes(response) <= max_bytes:
             return response
         if catalog_budget <= int(engine.ORIENTATION_MAP_MIN_MAX_BYTES):
@@ -1237,11 +1242,13 @@ def apply(engine) -> None:
             limit=limit_value,
         )
         chat_count = 0
+        chat_health = {}
         if resolved_mode == engine.MODE_NATIVE:
             chat_rows, chat_count = _chat_sources().discover(
                 engine, resolved_root, resolved_mode,
                 scope=scope, workspace=workspace,
                 query=query_value, limit=limit_value,
+                diagnostics=chat_health,
             )
             if chat_rows:
                 chat_items = [_chat_sources().as_item(row, depth_value)
@@ -1305,6 +1312,8 @@ def apply(engine) -> None:
         if chat_count:
             response["candidate_counts"]["portable_chat_messages"] = chat_count
             response["provenance"]["portable_chat_source"] = "ai-verse.chat-archive/v1"
+        if chat_health.get("skipped", 0):
+            response["provenance"]["archive_skips"] = chat_health
         return _append_with_budget(
             response,
             items,
