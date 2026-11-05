@@ -11,8 +11,10 @@ API to source depth. Legacy recall() is not modified here.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
@@ -34,6 +36,24 @@ DETAIL_DIGEST_CHARS = 2200
 MAX_DETAIL_LIST_ITEMS = 8
 MAX_RELATION_NEIGHBORS = 4
 MAX_RELATION_SCAN = 200
+
+
+def _chat_sources():
+    """Load the read-only OS archive fixture adapter without copying archives."""
+    name = "_aiverse_memory_portable_chat_sources"
+    module = sys.modules.get(name)
+    if module is None:
+        path = Path(__file__).resolve().with_name("chat_archive_sources.py")
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError("portable chat source reader unavailable or unsafe")
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("portable chat source reader cannot be loaded")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
+
 
 _HISTORY_INTENT_TERMS = frozenset({
     "before", "previous", "previously", "prior", "old", "older", "history",
@@ -516,8 +536,8 @@ def _normalize_evidence_ref(value: Optional[Mapping[str, Any]]) -> Dict[str, Any
     record_id = str(value.get("id") or "").strip()
     scope = str(value.get("scope") or "").strip()
     evidence = value.get("evidence")
-    if record_type not in {"indexed_record", "session_digest"}:
-        raise ValueError("evidence_ref record_type must be indexed_record or session_digest")
+    if record_type not in {"indexed_record", "session_digest", "portable_chat_message"}:
+        raise ValueError("evidence_ref record_type must be indexed_record, session_digest or portable_chat_message")
     if not record_id:
         raise ValueError("evidence_ref requires id")
     if not scope:
@@ -984,6 +1004,40 @@ def _exact_source_response(
     budget: int,
 ) -> Dict[str, Any]:
     normalized = _normalize_evidence_ref(evidence_ref)
+    if normalized["record_type"] == "portable_chat_message":
+        target_scope = _authorized_scope(
+            engine, requested_scope=requested_scope, workspace=workspace,
+            evidence_scope=normalized["scope"], root=root, mode=mode,
+        )
+        status, row, reason = _chat_sources().exact(
+            engine, root, mode, normalized,
+            scope=requested_scope, workspace=workspace,
+        )
+        if status != "ok":
+            return _source_failure(
+                scope=target_scope, budget=budget,
+                record_type="portable_chat_message", record_id=normalized["id"],
+                status=status, reason=reason,
+            )
+        base = {
+            "schema_version": PROGRESSIVE_RECALL_SCHEMA,
+            "api_version": PROGRESSIVE_RECALL_VERSION,
+            "depth": "source", "scope": target_scope,
+            "budget_bytes": budget, "status": "ok", "reason": None,
+            "exact_evidence": True, "source_depth_available": True,
+            "record_type": "portable_chat_message", "id": normalized["id"],
+            "role": row["role"], "message_id": row["message_id"],
+            "record_scope": row["scope"], "evidence": row["evidence"],
+            "provenance": {
+                "owner": "ai-verse-os", "reader": "ai-verse-memory",
+                "kind": "exact_portable_chat_message",
+                "scope_revalidated": True, "containment_revalidated": True,
+                "version_revalidated": True, "content_returned": True,
+            },
+        }
+        return _fit_exact_source_response(
+            engine, base=base, text=row["text"], query=query, budget=budget,
+        )
     if normalized["record_type"] == "indexed_record":
         return _indexed_exact_source(
             engine,
@@ -1054,6 +1108,15 @@ def _catalog_response(
                 "source_fingerprint": catalog["source_fingerprint"],
             },
         }
+        if mode == engine.MODE_NATIVE:
+            _, chat_count = _chat_sources().discover(
+                engine, root, mode, scope=scope, workspace=workspace,
+                query="", limit=0,
+            )
+            if chat_count:
+                response["catalog"]["counts"]["portable_chat_messages"] = chat_count
+                response["deeper_evidence_available"] = True
+                response["provenance"]["portable_chat_source"] = "ai-verse.chat-archive/v1"
         if _serialized_bytes(response) <= max_bytes:
             return response
         if catalog_budget <= int(engine.ORIENTATION_MAP_MIN_MAX_BYTES):
@@ -1173,6 +1236,24 @@ def apply(engine) -> None:
             depth=depth_value,
             limit=limit_value,
         )
+        chat_count = 0
+        if resolved_mode == engine.MODE_NATIVE:
+            chat_rows, chat_count = _chat_sources().discover(
+                engine, resolved_root, resolved_mode,
+                scope=scope, workspace=workspace,
+                query=query_value, limit=limit_value,
+            )
+            if chat_rows:
+                chat_items = [_chat_sources().as_item(row, depth_value)
+                              for row in chat_rows]
+                old_items = items
+                items = []
+                for index in range(max(len(chat_items), len(old_items))):
+                    if index < len(chat_items):
+                        items.append(chat_items[index])
+                    if index < len(old_items):
+                        items.append(old_items[index])
+                items = items[:limit_value]
         relationship_types = (
             _relationship_intent(engine, query_value)
             if depth_value == "detail"
@@ -1221,6 +1302,9 @@ def apply(engine) -> None:
                 },
             },
         }
+        if chat_count:
+            response["candidate_counts"]["portable_chat_messages"] = chat_count
+            response["provenance"]["portable_chat_source"] = "ai-verse.chat-archive/v1"
         return _append_with_budget(
             response,
             items,
