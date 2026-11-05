@@ -40,6 +40,36 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover -s tests -v
 
+  os-pr122-writer-contract:
+    name: Pinned OS PR 122 writer to Memory exact-source contract (synthetic)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout exact OS PR 122 source code, no installation
+        uses: actions/checkout@v4
+        with:
+          repository: aiverse-filmmakers/AI-Verse-OS
+          ref: 42d20e6bc8cd1aa9d9a97f2f408e2ce6e029f2d1
+          path: pinned-os-writer
+          sparse-checkout: |
+            system/extensions/packages/ai-verse-codex-learning/chat_archive.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Verify pinned immutable OS writer head
+        shell: bash
+        run: |
+          test "$(git -C pinned-os-writer rev-parse HEAD)" = "42d20e6bc8cd1aa9d9a97f2f408e2ce6e029f2d1"
+          test -f pinned-os-writer/system/extensions/packages/ai-verse-codex-learning/chat_archive.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run cross-repo synthetic writer and Memory source checks
+        env:
+          AI_VERSE_SYNTHETIC_OS_WRITER_ROOT: ${{ github.workspace }}/pinned-os-writer
+        run: python -m unittest -v tests.test_os_writer_contract
+
   public-beta-acceptance:
     strategy:
       fail-fast: false
