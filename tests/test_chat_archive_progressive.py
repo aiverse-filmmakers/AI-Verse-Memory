@@ -61,6 +61,7 @@ def write_archive(root, scope, archive_id="fixture-archive", texts=None):
     # Every directory beneath private-chat-history is explicitly private.
     path_cursor = root / "archives" / "private-chat-history"
     for part in ("v1", *suffix):
+        path_cursor = path_cursor / part
         path_cursor.mkdir(mode=0o700, exist_ok=True)
         if os.name != "nt":
             path_cursor.chmod(0o700)
