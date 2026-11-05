@@ -314,6 +314,16 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
                 row["evidence"]["archive_id"]: row for row in details["items"]
                 if row["record_type"] == "portable_chat_message"
             }
+            import sys
+            reader = sys.modules["_aiverse_memory_portable_chat_sources"]
+            # Even a file disappearing between validation and read cannot
+            # become an exception exposing data or a fallback to stale text.
+            with mock.patch.object(reader, "_read_bytes",
+                                   side_effect=FileNotFoundError("secret-name")):
+                raced = self._source(root, pointers["damaged-contract"])
+                self.assertEqual(raced["status"], "unavailable")
+                self.assertFalse(raced["exact_evidence"])
+                self.assertNotIn("secret-name", json.dumps(raced))
             damaged.write_bytes(b'{"kind":,}\n')
             self.assertEqual(
                 self._source(root, pointers["damaged-contract"])["status"],
