@@ -115,9 +115,9 @@ class PinnedOSWriterMemoryContract(unittest.TestCase):
                 archive = self._archive(
                     root, archive_id=f"real-locked-chat-{index:03d}",
                 )
-                _, receipt, _ = self._append(
-                    archive, 1, f"actual writer lockfile proof number {index}", 0,
-                )
+                target = ("unique_real_writer_lockfile_witness_65"
+                          if index == 65 else f"actual writer lockfile proof number {index}")
+                _, receipt, _ = self._append(archive, 1, target, 0)
                 self.assertEqual(receipt.status, "saved")
             folder = root / "archives/private-chat-history/v1/workspaces/alpha"
             self.assertEqual(len(list(folder.glob("*.jsonl"))), 65)
@@ -129,13 +129,13 @@ class PinnedOSWriterMemoryContract(unittest.TestCase):
             self.assertEqual(
                 catalog["catalog"]["counts"]["portable_chat_messages"], 65
             )
-            detail = self._detail(root, "actual writer lockfile proof number 65")
+            detail = self._detail(root, "unique_real_writer_lockfile_witness_65")
             self.assertEqual(len(detail), 1)
             exact = self._source(root, detail[0])
             self.assertEqual(exact["status"], "ok")
             self.assertEqual(
                 exact["source"]["content"],
-                "actual writer lockfile proof number 65",
+                "unique_real_writer_lockfile_witness_65",
             )
 
     def test_pinned_writer_reader_v1_capacity_above_old_reader_limits(self):
