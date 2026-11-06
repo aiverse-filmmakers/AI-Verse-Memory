@@ -105,6 +105,39 @@ class PinnedOSWriterMemoryContract(unittest.TestCase):
             max_bytes=10000,
         )
 
+    def test_actual_os_writer_65_lockfiles_do_not_exhaust_archive_count(self):
+        # Use the pinned OS writer to create real .lock siblings. This proves
+        # Memory discovery handles the writer's actual on-disk layout, not a
+        # purely hand-built JSONL fixture.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            for index in range(1, 66):
+                archive = self._archive(
+                    root, archive_id=f"real-locked-chat-{index:03d}",
+                )
+                _, receipt, _ = self._append(
+                    archive, 1, f"actual writer lockfile proof number {index}", 0,
+                )
+                self.assertEqual(receipt.status, "saved")
+            folder = root / "archives/private-chat-history/v1/workspaces/alpha"
+            self.assertEqual(len(list(folder.glob("*.jsonl"))), 65)
+            self.assertEqual(len(list(folder.glob("*.lock"))), 65)
+            catalog = mem.progressive_recall(
+                depth="catalog", workspace="alpha", root=root,
+                mode=mem.MODE_NATIVE, max_bytes=10000,
+            )
+            self.assertEqual(
+                catalog["catalog"]["counts"]["portable_chat_messages"], 65
+            )
+            detail = self._detail(root, "actual writer lockfile proof number 65")
+            self.assertEqual(len(detail), 1)
+            exact = self._source(root, detail[0])
+            self.assertEqual(exact["status"], "ok")
+            self.assertEqual(
+                exact["source"]["content"],
+                "actual writer lockfile proof number 65",
+            )
+
     def test_pinned_writer_reader_v1_capacity_above_old_reader_limits(self):
         # The old reader silently lost legitimate >20k-message or >8 MB
         # archives. Generate the actual OS writer's JSONL, not a surrogate.
