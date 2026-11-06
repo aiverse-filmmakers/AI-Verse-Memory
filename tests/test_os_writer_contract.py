@@ -105,6 +105,55 @@ class PinnedOSWriterMemoryContract(unittest.TestCase):
             max_bytes=10000,
         )
 
+    def test_pinned_writer_reader_v1_capacity_above_old_reader_limits(self):
+        # The old reader silently lost legitimate >20k-message or >8 MB
+        # archives. Generate the actual OS writer's JSONL, not a surrogate.
+        from scripts import chat_archive_sources as reader
+        self.assertEqual(reader.MAX_RECORDS_PER_ARCHIVE,
+                         self.os_writer.MAX_ARCHIVE_MESSAGES)
+        self.assertEqual(reader.MAX_ARCHIVE_BYTES,
+                         self.os_writer.MAX_ARCHIVE_BYTES)
+        self.assertLessEqual(reader.MAX_RECORDS_PER_ARCHIVE,
+                             reader.MAX_TOTAL_MESSAGES)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            archive = self._archive(root, archive_id="capacity-boundary")
+            events = []
+            offset = 0
+            target = "capacity_boundary_witness with precise UTF-8 🧪 中文"
+            for sequence in range(1, 20_002):
+                text = target if sequence == 20_001 else f"synthetic entry {sequence}"
+                source = _raw_event(sequence, text)
+                events.append(self.os_writer.ArchiveEvent(
+                    source_event_id=f"capacity-event-{sequence}",
+                    source_byte_offset=offset,
+                    source_end_offset=offset + len(source),
+                    source_record_sha256=hashlib.sha256(source).hexdigest(),
+                    source_record_bytes=source,
+                    block_index=0, message_id=f"message-{sequence}",
+                    sequence=sequence, role="user" if sequence % 2 else "assistant",
+                    text=text, record_terminated=True,
+                    attachment_availability="not_embedded",
+                ))
+                offset += len(source)
+            receipt = archive.append_batch(tuple(events))
+            self.assertEqual((receipt.saved, receipt.replayed), (20_001, 0))
+            file = (root / "archives/private-chat-history/v1/workspaces/alpha"
+                    / "capacity-boundary.jsonl")
+            self.assertGreater(file.stat().st_size, 8_000_000)
+            catalog = mem.progressive_recall(
+                depth="catalog", workspace="alpha", root=root,
+                mode=mem.MODE_NATIVE, max_bytes=10000,
+            )
+            self.assertEqual(catalog["catalog"]["counts"]["portable_chat_messages"],
+                             20_001)
+            matching = self._detail(root, "capacity_boundary_witness")
+            self.assertEqual(len(matching), 1)
+            source = self._source(root, matching[0])
+            self.assertEqual(source["status"], "ok")
+            self.assertEqual(source["source"]["content"], target)
+            self.assertEqual(archive.append_batch(tuple(events)).replayed, 20_001)
+
     def test_real_os_batch_writer_to_memory_exact_source_and_copy_replay(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
