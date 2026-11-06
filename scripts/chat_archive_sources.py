@@ -327,6 +327,32 @@ def _note_archive_failure(diagnostics: dict | None, exc: BaseException) -> None:
             diagnostics[key] = count + 1
 
 
+def revalidate(engine, root: Path, mode: str, *, scope=None, workspace=None,
+               required_scopes=()) -> None:
+    """Final disclosure guard for every scope, including earlier scan results.
+
+    A workspace+operator retrieval may scan its workspace first and operator
+    last. The workspace may be paused while the operator scan runs. Never
+    return previously gathered private text using the earlier authorization.
+    Recheck all currently selected scopes AND any scopes already contributing
+    results. This has no cached authorization and cannot mint provenance.
+    """
+    if mode != engine.MODE_NATIVE:
+        return
+    visible, _ = engine.allowed_scopes(
+        root, mode, scope=scope, workspace=workspace, all_workspaces=False
+    )
+    expected = tuple(dict.fromkeys((*tuple(visible or ()), *tuple(required_scopes))))
+    if not visible:
+        raise ArchiveSourceBlocked("archive scopes currently unavailable")
+    for selected in expected:
+        _source_scope(engine, root, mode, selected,
+                      requested_scope=scope, workspace=workspace)
+        if (selected in required_scopes
+                and not _folder_safe(root, _scoped_folder(root, selected))):
+            raise ArchiveSourceBlocked("archive scope folder disappeared")
+
+
 def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
               diagnostics: dict | None = None):
     if mode != engine.MODE_NATIVE:
@@ -336,12 +362,14 @@ def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
     if not visible:
         return []
     result = []
+    scanned_folders = set()
     for selected in visible:
         _source_scope(engine, root, mode, selected,
                       requested_scope=scope, workspace=workspace)
         folder = _scoped_folder(root, selected)
         if not _folder_safe(root, folder):
             continue
+        scanned_folders.add(selected)
         try:
             # The writer creates an archive .jsonl AND a sibling .lock file.
             # Bound total enumeration effort separately from actual archives,
@@ -389,6 +417,11 @@ def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
                       requested_scope=scope, workspace=workspace)
         if not _folder_safe(root, folder):
             raise ArchiveSourceBlocked("archive scope folder disappeared")
+    # Critical: a scope checked at the end of its OWN scan can be revoked
+    # while a later selected scope is scanned. Revalidate the entire set
+    # after the last scan and BEFORE any previously collected rows escape.
+    revalidate(engine, root, mode, scope=scope, workspace=workspace,
+               required_scopes=scanned_folders)
     return result
 
 
@@ -398,11 +431,18 @@ def discover(engine, root: Path, mode: str, *, scope=None, workspace=None,
     """Rebuildable, read-only discovery: no persistent chat index."""
     rows = _archives(engine, root, mode, scope=scope, workspace=workspace,
                      diagnostics=diagnostics)
+    # Ranking and selecting may take time after the archive scan. Revalidate
+    # all selected scopes once more immediately before each disclosure.
+    def finish(items, count):
+        revalidate(engine, root, mode, scope=scope, workspace=workspace,
+                   required_scopes={row["scope"] for row in rows})
+        return items, count
+
     if not query:
-        return rows[:max(0, limit)], len(rows)
+        return finish(rows[:max(0, limit)], len(rows))
     terms = [part.casefold() for part in re.findall(r"\w+", query, re.UNICODE)]
     if not terms:
-        return [], 0
+        return finish([], 0)
     matches = []
     for row in rows:
         text = row["text"].casefold()
@@ -411,7 +451,7 @@ def discover(engine, root: Path, mode: str, *, scope=None, workspace=None,
             matches.append((score, row))
     matches.sort(key=lambda item: (-item[0], item[1]["scope"],
                                     item[1]["path"], item[1]["sequence"]))
-    return [row for _, row in matches[:max(0, limit)]], len(matches)
+    return finish([row for _, row in matches[:max(0, limit)]], len(matches))
 
 
 def _pointer(row: Mapping[str, Any]) -> dict:
