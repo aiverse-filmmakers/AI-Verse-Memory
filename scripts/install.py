@@ -53,6 +53,7 @@ def source_copy(relative: str, destination: Path, source_dir, target_root=None):
         _original_source_copy("scripts/session_promotion.py", destination.parent / "session_promotion.py", source_dir, target_root=target_root)
         _original_source_copy("scripts/orientation_map.py", destination.parent / "orientation_map.py", source_dir, target_root=target_root)
         _original_source_copy("scripts/progressive_recall.py", destination.parent / "progressive_recall.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/chat_archive_sources.py", destination.parent / "chat_archive_sources.py", source_dir, target_root=target_root)
         _original_source_copy("scripts/relationship_projection.py", destination.parent / "relationship_projection.py", source_dir, target_root=target_root)
         _original_source_copy("scripts/purpose_history.py", destination.parent / "purpose_history.py", source_dir, target_root=target_root)
     elif relative == "scripts/component.py":
