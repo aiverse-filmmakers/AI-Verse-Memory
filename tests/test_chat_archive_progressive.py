@@ -389,6 +389,116 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
                     self._call(root, "detail", "portable")
             self.assertTrue(file.exists())
 
+    def test_revoked_workspace_during_later_operator_scan_never_returns_old_results(self):
+        # Native workspace queries intentionally select [workspace, operator].
+        # The previous code checked alpha at the end of alpha's scan, then
+        # read operator, but never checked alpha before returning both sets.
+        for depth in ("catalog", "summary", "detail"):
+            with self.subTest(depth=depth), tempfile.TemporaryDirectory() as tmp:
+                root = self._root(tmp)
+                workspace, _ = write_archive(
+                    root, "workspace:alpha", archive_id="workspace-before",
+                    texts=["TOP_SECRET_WORKSPACE_WITNESS portable review"],
+                )
+                operator, _ = write_archive(
+                    root, "operator", archive_id="operator-after",
+                    texts=["operator nonsecret portable review"],
+                )
+                # Positive baseline: both are valid, visible source records.
+                normal = self._call(root, "catalog")
+                self.assertEqual(
+                    normal["catalog"]["counts"]["portable_chat_messages"], 2
+                )
+                import sys
+                reader = sys.modules["_aiverse_memory_portable_chat_sources"]
+                read = reader._read_bytes
+                manifest = root / "workspaces/alpha/WORKSPACE.yaml"
+                seen = []
+
+                def revoke_during_operator(os_root, candidate):
+                    seen.append(candidate.name)
+                    data = read(os_root, candidate)
+                    if candidate.name == operator.name:
+                        manifest.write_text(
+                            'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n'
+                        )
+                    return data
+
+                with mock.patch.object(reader, "_read_bytes",
+                                       side_effect=revoke_during_operator):
+                    with self.assertRaises(reader.ArchiveSourceBlocked) as caught:
+                        self._call(root, depth, "portable review")
+                self.assertEqual(seen, [workspace.name, operator.name])
+                self.assertIn("authorization", str(caught.exception).lower())
+                self.assertNotIn("TOP_SECRET_WORKSPACE_WITNESS", str(caught.exception))
+
+    def test_revocation_after_archive_scan_and_after_discovery_is_still_denied(self):
+        # Test the two later disclosure windows independently: search ranking
+        # after _archives(), and progressive envelope construction after
+        # discover() returned rows. A no-content exception is the only result.
+        for stage in ("after_scan", "after_discovery"):
+            for depth in ("catalog", "summary", "detail"):
+                with self.subTest(stage=stage, depth=depth), tempfile.TemporaryDirectory() as tmp:
+                    root = self._root(tmp)
+                    write_archive(
+                        root, "workspace:alpha", archive_id="scope-before",
+                        texts=["TOP_SECRET_LAST_CHECK portable review"],
+                    )
+                    write_archive(
+                        root, "operator", archive_id="scope-after",
+                        texts=["operator portable review"],
+                    )
+                    self._call(root, "catalog")
+                    import sys
+                    reader = sys.modules["_aiverse_memory_portable_chat_sources"]
+                    manifest = root / "workspaces/alpha/WORKSPACE.yaml"
+                    original = (reader._archives if stage == "after_scan"
+                                else reader.discover)
+                    called = []
+
+                    def revoke_after_success(*args, **kwargs):
+                        result = original(*args, **kwargs)
+                        called.append(True)
+                        manifest.write_text(
+                            'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n'
+                        )
+                        return result
+
+                    target = "_archives" if stage == "after_scan" else "discover"
+                    with mock.patch.object(reader, target,
+                                           side_effect=revoke_after_success):
+                        with self.assertRaises(reader.ArchiveSourceBlocked) as caught:
+                            self._call(root, depth, "portable review")
+                    self.assertTrue(called)
+                    self.assertNotIn("TOP_SECRET_LAST_CHECK", str(caught.exception))
+
+    def test_exact_source_rechecks_after_excerpt_rendering_before_disclosure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            write_archive(
+                root, "workspace:alpha", archive_id="exact-race",
+                texts=["TOP_SECRET_EXACT_RESPONSE portable review"],
+            )
+            item = self._detail(root, "TOP_SECRET_EXACT_RESPONSE")
+            import sys
+            reader = sys.modules["_aiverse_memory_portable_chat_sources"]
+            progressive_module = sys.modules[mem.progressive_recall.__module__]
+            original_fit = progressive_module._fit_exact_source_response
+            manifest = root / "workspaces/alpha/WORKSPACE.yaml"
+
+            def revoke_after_fit(*args, **kwargs):
+                response = original_fit(*args, **kwargs)
+                manifest.write_text(
+                    'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n'
+                )
+                return response
+
+            with mock.patch.object(progressive_module, "_fit_exact_source_response",
+                                   side_effect=revoke_after_fit):
+                with self.assertRaises(reader.ArchiveSourceBlocked) as caught:
+                    self._source(root, item)
+            self.assertNotIn("TOP_SECRET_EXACT_RESPONSE", str(caught.exception))
+
     def test_archive_budget_excludes_os_lockfiles_but_stays_bounded(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
