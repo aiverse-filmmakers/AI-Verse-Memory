@@ -22,6 +22,11 @@ ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 WORKSPACE = re.compile(r"^[a-z0-9][a-z0-9-]{0,127}$")
 SHA = re.compile(r"^[0-9a-f]{64}$")
 MAX_ARCHIVES = 128
+# Bounded work when listing a private archive directory. A valid OS writer
+# creates one .jsonl plus one .lock per chat, so the entry budget must not
+# count lock files against MAX_ARCHIVES. An excessive junk/lockfile flood
+# still fails closed rather than iterating an unbounded directory.
+MAX_DIRECTORY_ENTRIES = MAX_ARCHIVES * 4
 # Shared v1 capacity contract, enforced by OS ChatArchive on both writer
 # entry points. Keep this aligned with OS MAX_ARCHIVE_MESSAGES/BYTES.
 # The total-message budget remains a separate global request-wide bound.
@@ -338,17 +343,24 @@ def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
         if not _folder_safe(root, folder):
             continue
         try:
-            # Do not eagerly list an unbounded directory. Retain the old
-            # MAX_ARCHIVES limit even when most entries are lock files.
-            files = list(itertools.islice(folder.iterdir(), MAX_ARCHIVES + 1))
+            # The writer creates an archive .jsonl AND a sibling .lock file.
+            # Bound total enumeration effort separately from actual archives,
+            # so 128 legitimate chats with 128 locks do not exceed the count.
+            entries = list(itertools.islice(
+                folder.iterdir(), MAX_DIRECTORY_ENTRIES + 1
+            ))
         except OSError:
             raise ArchiveSourceBlocked("private archive folder cannot be listed") from None
+        if len(entries) > MAX_DIRECTORY_ENTRIES:
+            raise ArchiveSourceBlocked("archive directory scan budget exceeded")
+        files = sorted(
+            (path for path in entries
+             if path.suffix == ".jsonl" and ID.fullmatch(path.stem)),
+            key=lambda path: path.name,
+        )
         if len(files) > MAX_ARCHIVES:
             raise ArchiveSourceBlocked("archive source count exceeds budget")
-        for path in sorted(files, key=lambda p: p.name):
-            if not ID.fullmatch(path.stem) or path.suffix != ".jsonl":
-                # Lock files and other extension-owned private files are not sources.
-                continue
+        for path in files:
             try:
                 records = _parse_archive(_read_bytes(root, path), selected, path.stem)
             except (ArchiveSourceBlocked, OSError, UnicodeError) as exc:
