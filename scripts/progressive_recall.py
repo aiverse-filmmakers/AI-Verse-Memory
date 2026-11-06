@@ -1035,9 +1035,16 @@ def _exact_source_response(
                 "version_revalidated": True, "content_returned": True,
             },
         }
-        return _fit_exact_source_response(
+        result = _fit_exact_source_response(
             engine, base=base, text=row["text"], query=query, budget=budget,
         )
+        # Formatting a large exact-source excerpt is not a scope lease.
+        # Revalidate after it and before exposing source text to the caller.
+        _chat_sources().revalidate(
+            engine, root, mode, scope=requested_scope, workspace=workspace,
+            required_scopes=(row["scope"],),
+        )
+        return result
     if normalized["record_type"] == "indexed_record":
         return _indexed_exact_source(
             engine,
@@ -1201,7 +1208,7 @@ def apply(engine) -> None:
             raise ValueError("evidence_ref is only valid for source depth")
 
         if depth_value == "catalog":
-            return _catalog_response(
+            response = _catalog_response(
                 engine,
                 scope=scope,
                 workspace=workspace,
@@ -1209,6 +1216,12 @@ def apply(engine) -> None:
                 mode=resolved_mode,
                 max_bytes=budget,
             )
+            if resolved_mode == engine.MODE_NATIVE:
+                _chat_sources().revalidate(
+                    engine, resolved_root, resolved_mode,
+                    scope=scope, workspace=workspace,
+                )
+            return response
 
         target_scope = _target_scope(
             engine,
@@ -1314,12 +1327,21 @@ def apply(engine) -> None:
             response["provenance"]["portable_chat_source"] = "ai-verse.chat-archive/v1"
         if chat_health.get("skipped", 0):
             response["provenance"]["archive_skips"] = chat_health
-        return _append_with_budget(
+        result = _append_with_budget(
             response,
             items,
             budget,
             total_candidates=len(items),
         )
+        if resolved_mode == engine.MODE_NATIVE:
+            # A workspace may become inactive after discovery while other
+            # sources and response budgets are still being processed.
+            _chat_sources().revalidate(
+                engine, resolved_root, resolved_mode,
+                scope=scope, workspace=workspace,
+                required_scopes={row["scope"] for row in chat_rows},
+            )
+        return result
 
     engine.progressive_recall = progressive_recall
     engine.PROGRESSIVE_RECALL_SCHEMA = PROGRESSIVE_RECALL_SCHEMA
