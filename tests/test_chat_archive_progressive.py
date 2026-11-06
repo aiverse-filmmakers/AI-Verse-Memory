@@ -389,6 +389,87 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
                     self._call(root, "detail", "portable")
             self.assertTrue(file.exists())
 
+    def test_archive_budget_excludes_os_lockfiles_but_stays_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            # Every archived conversation has a .jsonl and a .lock file.
+            # At 65 chats the previous implementation already failed by
+            # counting 130 entries against a 128 archive limit.
+            folder = None
+            for index in range(1, 66):
+                path, _ = write_archive(
+                    root, "workspace:alpha", archive_id=f"chat-{index:03d}",
+                    texts=[f"portable chat witness {index}"],
+                )
+                folder = path.parent
+                path.with_suffix(".lock").write_bytes(b"\0")
+            self.assertEqual(len(list(folder.iterdir())), 130)
+            self.assertEqual(
+                self._call(root, "catalog")["catalog"]["counts"]["portable_chat_messages"],
+                65,
+            )
+            source_item = self._detail(root, "portable chat witness 65")
+            self.assertEqual(self._source(root, source_item)["status"], "ok")
+
+            # Full legitimate archive budget: 128 JSONL files, 128 locks.
+            for index in range(66, 129):
+                path, _ = write_archive(
+                    root, "workspace:alpha", archive_id=f"chat-{index:03d}",
+                    texts=[f"portable chat witness {index}"],
+                )
+                path.with_suffix(".lock").write_bytes(b"\0")
+            self.assertEqual(len(list(folder.iterdir())), 256)
+            self.assertEqual(
+                self._call(root, "catalog")["catalog"]["counts"]["portable_chat_messages"],
+                128,
+            )
+            # The 129th real archive must still fail the existing global
+            # source-count cap, regardless of its lockfile.
+            excess, _ = write_archive(
+                root, "workspace:alpha", archive_id="chat-129",
+                texts=["portable excess chat witness"],
+            )
+            excess.with_suffix(".lock").write_bytes(b"\0")
+            import sys
+            reader = sys.modules["_aiverse_memory_portable_chat_sources"]
+            with self.assertRaisesRegex(
+                reader.ArchiveSourceBlocked, "archive source count exceeds budget"
+            ):
+                self._call(root, "catalog")
+
+    def test_lockfile_flood_hits_separate_directory_enumeration_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            first, _ = write_archive(
+                root, "workspace:alpha", archive_id="small-one",
+                texts=["portable first source"],
+            )
+            second, _ = write_archive(
+                root, "workspace:alpha", archive_id="small-two",
+                texts=["portable second source"],
+            )
+            first.with_suffix(".lock").write_bytes(b"\0")
+            second.with_suffix(".lock").write_bytes(b"\0")
+            self._call(root, "catalog")
+            import sys
+            reader = sys.modules["_aiverse_memory_portable_chat_sources"]
+            with mock.patch.object(reader, "MAX_DIRECTORY_ENTRIES", 4):
+                self.assertEqual(
+                    self._call(root, "catalog")["catalog"]["counts"]["portable_chat_messages"],
+                    2,
+                )
+                # Only junk entries grow the directory; no new archive is
+                # created. Enumeration must refuse a flood, not iterate it
+                # indefinitely or expose names to the caller.
+                (first.parent / "private-sensitive-filename.lock").write_bytes(b"\0")
+                with self.assertRaises(reader.ArchiveSourceBlocked) as caught:
+                    self._call(root, "catalog")
+                self.assertEqual(
+                    str(caught.exception),
+                    "archive directory scan budget exceeded",
+                )
+                self.assertNotIn("private-sensitive-filename", str(caught.exception))
+
     def test_global_archive_count_and_message_budgets_remain_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
