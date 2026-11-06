@@ -22,8 +22,11 @@ ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 WORKSPACE = re.compile(r"^[a-z0-9][a-z0-9-]{0,127}$")
 SHA = re.compile(r"^[0-9a-f]{64}$")
 MAX_ARCHIVES = 128
-MAX_RECORDS_PER_ARCHIVE = 20000
-MAX_ARCHIVE_BYTES = 8_000_000
+# Shared v1 capacity contract, enforced by OS ChatArchive on both writer
+# entry points. Keep this aligned with OS MAX_ARCHIVE_MESSAGES/BYTES.
+# The total-message budget remains a separate global request-wide bound.
+MAX_RECORDS_PER_ARCHIVE = 40_000
+MAX_ARCHIVE_BYTES = 64_000_000
 MAX_TOTAL_MESSAGES = 40000
 MAX_DIAGNOSTIC_COUNT = 128
 # Fixed, count-only categories. Never report filenames, paths, IDs or content.
