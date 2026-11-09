@@ -31,6 +31,7 @@ jobs:
           python -m py_compile scripts/orientation_map.py
           python -m py_compile scripts/progressive_recall.py
           python -m py_compile scripts/chat_archive_sources.py
+          python -m py_compile scripts/codex_archive_v2_fixture.py
           python -m py_compile scripts/relationship_projection.py
           python -m py_compile scripts/neighbor_recall_benchmark.py
           python -m py_compile scripts/component.py
@@ -69,6 +70,38 @@ jobs:
         env:
           AI_VERSE_SYNTHETIC_OS_WRITER_ROOT: ${{ github.workspace }}/pinned-os-writer
         run: python -m unittest -v tests.test_os_writer_contract
+
+  os-pr124-v2-fixture-contract:
+    name: Pinned OS PR 124 synthetic v2 source envelope to isolated Memory decoder
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout immutable OS 3A.8 v2 fixture source, no install
+        uses: actions/checkout@v4
+        with:
+          repository: aiverse-filmmakers/AI-Verse-OS
+          ref: f23d479f50c42636136a102922b42025a1533858
+          path: pinned-os-v2
+          sparse-checkout: |
+            system/extensions/packages/ai-verse-codex-learning/codex_app_server_source_evidence.py
+            system/extensions/packages/ai-verse-codex-learning/codex_app_server_archive_v2.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Verify exact OS 3A.8 head and both original source modules
+        shell: bash
+        run: |
+          test "$(git -C pinned-os-v2 rev-parse HEAD)" = "f23d479f50c42636136a102922b42025a1533858"
+          test -f pinned-os-v2/system/extensions/packages/ai-verse-codex-learning/codex_app_server_source_evidence.py
+          test -f pinned-os-v2/system/extensions/packages/ai-verse-codex-learning/codex_app_server_archive_v2.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run OS encoder to independent Memory decoder synthetic tests
+        env:
+          AI_VERSE_SYNTHETIC_OS_V2_ROOT: ${{ github.workspace }}/pinned-os-v2
+        run: python -m unittest -v tests.test_os_v2_fixture_contract
 
   public-beta-acceptance:
     strategy:
