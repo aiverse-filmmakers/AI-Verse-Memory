@@ -42,7 +42,8 @@ class V2MemoryFixtureContractTests(unittest.TestCase):
                turn={"id":turn, "status":"completed"}),
         ]
 
-    def archive(self, events=None, header_changes=None, seal_changes=None):
+    def archive(self, events=None, header_changes=None, seal_changes=None,
+                override_user_summary_text=None):
         events = self.frames() if events is None else events
         frames = [line(e) for e in events]
         header = {
@@ -74,7 +75,9 @@ class V2MemoryFixtureContractTests(unittest.TestCase):
         for index, item in ((1, events[1]["params"]["item"]),
                             (2, events[2]["params"]["item"])):
             role = "user" if index == 1 else "assistant"
-            text = item["content"][0]["text"] if role == "user" else item["text"]
+            text = (override_user_summary_text if role == "user"
+                    and override_user_summary_text is not None else
+                    item["content"][0]["text"] if role == "user" else item["text"])
             summary.append({
                 "role":role, "item_id":item["id"], "frame_index":index,
                 "text_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -190,25 +193,20 @@ class V2MemoryFixtureContractTests(unittest.TestCase):
                 self.blocked(lambda: self.parse(self.archive(rows)))
 
     def test_ambiguous_media_and_nonfinal_assistant_refuse(self):
+        # Rebuild correct SHA-256/chain/seal for each source variant, so a
+        # semantic failure cannot be mistaken for trivial corrupt hashes.
         for content in (
             [{"type":"image","url":"fake"}],
             [{"type":"text","text":"a"},{"type":"text","text":"b"}],
         ):
             rows = self.frames()
             rows[1]["params"]["item"]["content"] = content
-            # Modify original wire but leave witness summary built separately.
-            rows[1]["params"]["item"]["content"] = content
-            rowbytes = self.archive()
-            pieces = rowbytes.splitlines(keepends=True)
-            frame = json.loads(pieces[2])
-            event = json.loads(base64.b64decode(frame["wire_b64"]))
-            event["params"]["item"]["content"] = content
-            w = line(event)
-            frame["wire_b64"] = base64.b64encode(w).decode("ascii")
-            frame["wire_byte_length"] = len(w)
-            frame["wire_sha256"] = hashlib.sha256(w).hexdigest()
-            pieces[2] = line(frame)
-            self.blocked(lambda: self.parse(b"".join(pieces)))
+            blob = self.archive(rows, override_user_summary_text="synthetic fallback")
+            self.blocked(lambda: self.parse(blob))
+        for phase in ("commentary", "partial_answer", None):
+            rows = self.frames()
+            rows[2]["params"]["item"]["phase"] = phase
+            self.blocked(lambda: self.parse(self.archive(rows)))
 
     def test_writer_never_mints_real_disclosure_authority(self):
         self.assertEqual(reader.discover_real_v2()["status"], "blocked")
@@ -226,23 +224,10 @@ class V2MemoryFixtureContractTests(unittest.TestCase):
 
     def test_unknown_event_even_with_rebuilt_hash_chain_refuses(self):
         rows = self.frames()
-        rows.insert(2, {"method":"thread/resumed",
-                        "params":{"threadId":"synthetic-thread-v2",
-                                  "turnId":"synthetic-turn-v2"}})
-        # Build valid chain and seal outside parser. Reorder the final events
-        # to keep the fixture's message summary at its normal indices.
-        blob = self.archive()
-        source_rows = blob.splitlines(keepends=True)
-        self.assertEqual(len(source_rows), 6)
-        # Unknown event replacement verifies source semantic checks precede
-        # the already-invalid stream checksum.
-        entry = json.loads(source_rows[2])
-        unknown = line(rows[2])
-        entry["wire_b64"] = base64.b64encode(unknown).decode()
-        entry["wire_sha256"] = hashlib.sha256(unknown).hexdigest()
-        entry["wire_byte_length"] = len(unknown)
-        source_rows[2] = line(entry)
-        self.blocked(lambda: self.parse(b"".join(source_rows)))
+        # A source with a perfectly valid envelope but an unrecognized
+        # lifecycle method must still be refused by Memory's own parser.
+        rows[2]["method"] = "thread/resumed"
+        self.blocked(lambda: self.parse(self.archive(rows)))
 
 
 if __name__ == "__main__":
