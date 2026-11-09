@@ -208,6 +208,15 @@ class V2MemoryFixtureContractTests(unittest.TestCase):
             rows[2]["params"]["item"]["phase"] = phase
             self.blocked(lambda: self.parse(self.archive(rows)))
 
+    def test_nonstring_source_item_type_fails_closed_even_with_valid_seal(self):
+        for invalid in ([], {}, 123, None):
+            with self.subTest(type=type(invalid).__name__):
+                rows = self.frames()
+                rows[2]["params"]["item"]["type"] = invalid
+                # The test envelope builder recomputes all frame digests,
+                # the hash chain and the final seal before Memory decodes.
+                self.blocked(lambda: self.parse(self.archive(rows)))
+
     def test_writer_never_mints_real_disclosure_authority(self):
         self.assertEqual(reader.discover_real_v2()["status"], "blocked")
         self.assertEqual(reader.expose_real_v2_source()["status"], "blocked")
