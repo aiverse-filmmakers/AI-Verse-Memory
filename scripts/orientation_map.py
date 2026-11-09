@@ -334,7 +334,8 @@ def _session_digests(
 def _tag_values(raw: str) -> Iterable[str]:
     for item in re.split(r"[,;|]+", raw or ""):
         value = re.sub(r"\s+", " ", item).strip()
-        if value:
+        # "~" marks a search-only hook: indexed for recall, kept out of the catalog.
+        if value and not value.startswith("~"):
             yield value
 
 

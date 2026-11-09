@@ -1088,6 +1088,24 @@ def tokenize(value: str) -> List[str]:
     return [t.lower() for t in re.findall(r"[A-Za-z0-9_\-]{2,}", value)]
 
 
+_QUERY_STOPWORDS = frozenset(
+    "a an and are as at be been but by can could did do does for from had has have how i if in into is it its "
+    "me my of on or our should so than that the their them then there these they this to was we were what when "
+    "where which who whom why will with would you your any about after again all also am before being both each "
+    "get got just more most much no not now off once only other out over own same some such too up very".split()
+)
+
+
+def query_terms(query: str) -> List[str]:
+    """Search words from a question with filler words removed.
+
+    Falls back to every word when the question is nothing but filler.
+    """
+    terms = tokenize(query)
+    kept = [t for t in terms if t not in _QUERY_STOPWORDS]
+    return kept or terms
+
+
 def parse_dt(value: str) -> Optional[datetime]:
     if not value:
         return None
@@ -1111,7 +1129,7 @@ def row_haystack(row: sqlite3.Row) -> str:
 
 
 def row_matches_query(row: sqlite3.Row, query: str) -> bool:
-    terms = set(tokenize(query))
+    terms = set(query_terms(query))
     if not terms:
         return False
     hay = row_haystack(row)
@@ -1146,11 +1164,13 @@ def allowed_scopes(
 
 
 def custom_score(row: sqlite3.Row, query: str, primary_scope: Optional[str]) -> float:
-    q = set(tokenize(query))
+    q = set(query_terms(query))
     hay = row_haystack(row)
     words = set(tokenize(hay))
     overlap = len(q & words)
     score = overlap * 2.0
+    if row["kind"] == "memory":
+        score += 2.0
     if query.strip().lower() in hay:
         score += 4.0
     if primary_scope:
@@ -1198,7 +1218,7 @@ def recall(
         params.extend(scopes)
 
     candidates: List[sqlite3.Row] = []
-    terms = tokenize(query)
+    terms = query_terms(query)
     used_fts = False
     if fts and terms:
         fts_query = " OR ".join(f'"{t.replace(chr(34), "")}"' for t in terms[:12])

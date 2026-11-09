@@ -69,6 +69,8 @@ python <memory-engine> remember --type lesson --workspace <id> --text "<lesson>"
 
 Use `--effect-id` when a durable write may be retried.
 
+Always pass `--tags`: plain tags for real topics, plus 6 to 12 `~` search hooks, which are everyday words someone might use to ask about this memory later and that its text lacks. Example: `--tags "equipment,~aerial,~camera,~gear"`. Hooks are indexed for search and hidden from the catalog.
+
 ## Self-learning evidence
 
 Memory may record:

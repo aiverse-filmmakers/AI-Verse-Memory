@@ -61,6 +61,36 @@ class StandaloneMemoryTests(unittest.TestCase):
         rows_after = mem.recall("project updates", "project:test", 8, False, self.root, mem.MODE_STANDALONE)
         self.assertTrue(any(r["id"] == first_id for r in rows_after))
 
+    def _remember(self, text, tags=""):
+        memory_id, _, _ = mem.write_atomic(
+            text=text, mem_type="fact", scope="project:test", source="unit-test", tags=tags,
+            root=self.root, mode=mem.MODE_STANDALONE,
+        )
+        return memory_id
+
+    def _recall(self, query):
+        rows = mem.recall(query, "project:test", 8, False, self.root, mem.MODE_STANDALONE)
+        return [r["id"] for r in rows]
+
+    def test_filler_words_do_not_match_memories(self):
+        memory_id = self._remember("I do have the recipe for what we made")
+        self.assertNotIn(memory_id, self._recall("what do I have for zebra"))
+
+    def test_question_of_only_filler_words_still_searches(self):
+        memory_id = self._remember("I do have the recipe for what we made")
+        self.assertIn(memory_id, self._recall("what do I have"))
+
+    def test_search_hook_tags_are_found_by_recall(self):
+        memory_id = self._remember("Owns several FPV quadcopters", tags="equipment,~aerial")
+        self.assertIn(memory_id, self._recall("aerial"))
+
+    def test_search_hook_tags_stay_out_of_catalog_topics(self):
+        spec = importlib.util.spec_from_file_location("orientation_map_under_test", ROOT / "scripts" / "orientation_map.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        self.assertEqual(list(module._tag_values("equipment,~aerial,gear")), ["equipment", "gear"])
+
     def test_supersession_preserves_history(self):
         old_id, old_path, _ = mem.write_atomic(
             text="Use workflow A",
