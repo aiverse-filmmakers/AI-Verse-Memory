@@ -16,7 +16,7 @@ from scripts import codex_archive_v2_fixture as mem_reader
 
 
 OS_ROOT = os.environ.get("AI_VERSE_SYNTHETIC_OS_V2_ROOT", "")
-OS_PIN = "f23d479f50c42636136a102922b42025a1533858"
+OS_PIN = "3c7e9dcf79f8ca8accfd0ef4ce1ac72db0e44fe3"
 PKG = "system/extensions/packages/ai-verse-codex-learning/"
 
 
