@@ -218,7 +218,7 @@ jobs:
           MEMORY_ROOT="$PWD"
           TARGET="$RUNNER_TEMP/ai-verse-os-current"
           rm -rf "$TARGET"
-          git clone --depth 1 https://github.com/aiverse-filmmakers/AI-Verse-OS.git "$TARGET"
+          git clone https://github.com/aiverse-filmmakers/AI-Verse-OS.git "$TARGET"
 
           python "$MEMORY_ROOT/scripts/install.py" --target "$TARGET" --source-dir "$MEMORY_ROOT"
 
