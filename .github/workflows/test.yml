@@ -78,21 +78,21 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout immutable OS 3A.8 v2 fixture source, no install
+      - name: Checkout immutable OS 3A.10 pinned v2 fixture source, no install
         uses: actions/checkout@v4
         with:
           repository: aiverse-filmmakers/AI-Verse-OS
-          ref: f23d479f50c42636136a102922b42025a1533858
+          ref: 3c7e9dcf79f8ca8accfd0ef4ce1ac72db0e44fe3
           path: pinned-os-v2
           sparse-checkout: |
             system/extensions/packages/ai-verse-codex-learning/codex_app_server_source_evidence.py
             system/extensions/packages/ai-verse-codex-learning/codex_app_server_archive_v2.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - name: Verify exact OS 3A.8 head and both original source modules
+      - name: Verify exact OS 3A.10 head and both original source modules
         shell: bash
         run: |
-          test "$(git -C pinned-os-v2 rev-parse HEAD)" = "f23d479f50c42636136a102922b42025a1533858"
+          test "$(git -C pinned-os-v2 rev-parse HEAD)" = "3c7e9dcf79f8ca8accfd0ef4ce1ac72db0e44fe3"
           test -f pinned-os-v2/system/extensions/packages/ai-verse-codex-learning/codex_app_server_source_evidence.py
           test -f pinned-os-v2/system/extensions/packages/ai-verse-codex-learning/codex_app_server_archive_v2.py
       - uses: actions/setup-python@v5
