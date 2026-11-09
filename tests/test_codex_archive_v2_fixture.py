@@ -208,6 +208,48 @@ class V2MemoryFixtureContractTests(unittest.TestCase):
             rows[2]["params"]["item"]["phase"] = phase
             self.blocked(lambda: self.parse(self.archive(rows)))
 
+    def test_rehashed_legacy_completed_items_missing_pinned_timestamp_refuse(self):
+        # The envelope builder recomputes all SHA-256 digests, the ordered
+        # stream and the seal. Memory must independently reject old payloads.
+        for index in (1, 2):
+            for stamp in ("missing", None, False, True, -1, 1.5, "1000", 2**63):
+                with self.subTest(index=index, stamp=stamp):
+                    events = self.frames()
+                    if stamp == "missing":
+                        del events[index]["params"]["completedAtMs"]
+                    else:
+                        events[index]["params"]["completedAtMs"] = stamp
+                    self.blocked(lambda: self.parse(self.archive(events)))
+
+    def test_rehashed_item_started_lifecycle_timestamp_required(self):
+        # Keep user and assistant positions unchanged for the fixture seal
+        # while adding a matched, schema-shaped nonchat item lifecycle.
+        valid = self.frames()
+        start = {"method": "item/started", "params": {
+            "threadId": "synthetic-thread-v2",
+            "turnId": "synthetic-turn-v2",
+            "startedAtMs": 1002,
+            "item": {"id": "plan-1", "type": "plan", "text": "synthetic"},
+        }}
+        completed = {"method": "item/completed", "params": {
+            "threadId": "synthetic-thread-v2",
+            "turnId": "synthetic-turn-v2",
+            "completedAtMs": 1003,
+            "item": {"id": "plan-1", "type": "plan", "text": "synthetic"},
+        }}
+        valid[3:3] = [start, completed]
+        self.assertFalse(self.parse(self.archive(valid)).live_recall_admitted)
+        for stamp in ("missing", None, False, True, -1, 1.5, "1002", 2**63):
+            with self.subTest(stamp=stamp):
+                events = self.frames()
+                event_start = {"method": "item/started", "params": dict(start["params"])}
+                if stamp == "missing":
+                    del event_start["params"]["startedAtMs"]
+                else:
+                    event_start["params"]["startedAtMs"] = stamp
+                events[3:3] = [event_start, completed]
+                self.blocked(lambda: self.parse(self.archive(events)))
+
     def test_nonstring_source_item_type_fails_closed_even_with_valid_seal(self):
         for invalid in ([], {}, 123, None):
             with self.subTest(type=type(invalid).__name__):
