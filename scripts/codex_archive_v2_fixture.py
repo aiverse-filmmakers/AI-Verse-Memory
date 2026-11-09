@@ -276,6 +276,9 @@ def parse_synthetic_v2_bytes(
         if method in DELTA:
             continue
         if method == "item/started":
+            stamp = params.get("startedAtMs")
+            if type(stamp) is not int or not 0 <= stamp <= (1 << 63) - 1:
+                _deny()
             item = params.get("item")
             if not isinstance(item, dict):
                 _deny()
@@ -287,6 +290,9 @@ def parse_synthetic_v2_bytes(
             started[iid] = item["type"]
             continue
         if method != "item/completed":
+            _deny()
+        stamp = params.get("completedAtMs")
+        if type(stamp) is not int or not 0 <= stamp <= (1 << 63) - 1:
             _deny()
         item = params.get("item")
         if not isinstance(item, dict):
