@@ -123,7 +123,7 @@ def _json(line: bytes, *, source=False) -> dict:
             line[:-1].decode("utf-8", "strict"),
             object_pairs_hook=_pairs, parse_constant=_constant,
         )
-    except (ValueError, UnicodeError, TypeError):
+    except (ValueError, UnicodeError, TypeError, RecursionError, OverflowError):
         _deny()
     if not isinstance(result, dict):
         _deny()
@@ -136,7 +136,7 @@ def _canonical(row: Mapping) -> bytes:
             row, ensure_ascii=False, sort_keys=True, allow_nan=False,
             separators=(",", ":"),
         ).encode("utf-8", "strict") + b"\n")
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError, UnicodeError, RecursionError, OverflowError):
         _deny()
 
 
@@ -293,6 +293,11 @@ def parse_synthetic_v2_bytes(
             _deny()
         iid = _id(item.get("id"))
         kind = item.get("type")
+        # Unknown JSON kinds may be lists or dictionaries; membership in
+        # a frozenset would otherwise raise TypeError rather than returning
+        # the required static fail-closed diagnostic.
+        if not isinstance(kind, str):
+            _deny()
         if (iid in finished or iid in started and started[iid] != kind):
             _deny()
         finished[iid] = kind
