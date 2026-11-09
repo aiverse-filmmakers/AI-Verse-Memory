@@ -1585,6 +1585,48 @@ def integration_checks(root: Path, mode: str) -> List[Tuple[str, bool, str, bool
     return checks
 
 
+def _has_search_hooks(tags: str) -> bool:
+    return any(item.strip().startswith("~") for item in re.split(r"[,;|]+", tags or ""))
+
+
+def memories_missing_search_hooks(
+    root: Optional[Path] = None, mode: Optional[str] = None, scope: Optional[str] = None
+) -> List[Tuple[str, str, str]]:
+    """Active memories with no ~ search hooks, as (id, scope, text)."""
+    root = root or repository_root()
+    mode = mode or detect_mode(root)
+    missing = []
+    for path in iter_atomic_files(root, mode):
+        meta, body = parse_markdown(path)
+        if not meta or meta.get("status", "active") != "active" or _has_search_hooks(meta.get("tags", "")):
+            continue
+        if scope and meta.get("scope") != scope:
+            continue
+        missing.append((path.stem, meta.get("scope", ""), body.replace("# Memory", "", 1).strip()))
+    return sorted(missing)
+
+
+def add_search_hooks(mem_id: str, hooks: str, root: Optional[Path] = None, mode: Optional[str] = None) -> str:
+    """Add ~ search hooks to one memory. Changes only its tags; dates and text stay as they were."""
+    root = root or repository_root()
+    mode = mode or detect_mode(root)
+    path = locate_memory(mem_id, root, mode)
+    if path is None:
+        raise ValueError(f"No active canonical memory found: {mem_id}")
+    meta, body = parse_markdown(path)
+    current = [item.strip() for item in re.split(r"[,;|]+", meta.get("tags", "")) if item.strip()]
+    for item in re.split(r"[,;|]+", hooks or ""):
+        word = item.strip().lstrip("~").strip()
+        if word and f"~{word}" not in current:
+            current.append(f"~{word}")
+    tags = ",".join(current)
+    if len(tags) > 300:
+        raise ValueError("Tags must stay under 300 characters")
+    meta["tags"] = tags
+    path.write_text(render_frontmatter(meta) + "\n\n" + body.strip() + "\n", encoding="utf-8")
+    return tags
+
+
 def doctor(root: Optional[Path] = None, mode: Optional[str] = None) -> int:
     root = root or repository_root()
     mode = mode or detect_mode(root)
@@ -1631,6 +1673,14 @@ def doctor(root: Optional[Path] = None, mode: Optional[str] = None) -> int:
         checks.extend(integration_checks(root, mode))
 
     checks.append(("Migration completed", p["migration"].exists(), "optional on fresh repositories", False))
+    missing_hooks = len(memories_missing_search_hooks(root, mode))
+    checks.append((
+        "Search words on memories",
+        missing_hooks == 0,
+        "every active memory has search words" if missing_hooks == 0
+        else f"{missing_hooks} memories have none; list them with search-hooks --list and add words with search-hooks ID --add",
+        False,
+    ))
 
     print(f"AI-Verse Memory {VERSION}")
     failures = 0
@@ -1750,6 +1800,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init", help="Create the memory/index layout for the detected mode")
     sub.add_parser("rebuild", help="Rebuild SQLite from canonical Markdown and scoped OS sources")
     sub.add_parser("doctor", help="Validate storage, index, isolation, and native OS integration")
+    hooks_p = sub.add_parser("search-hooks", help="List memories with no ~ search words, or add words to one memory")
+    hooks_p.add_argument("id", nargs="?", help="Memory id to add search words to")
+    hooks_p.add_argument("--list", action="store_true", help="List active memories that have no search words")
+    hooks_p.add_argument("--add", default="", help="Comma separated search words")
+    hooks_p.add_argument("--scope", default="", help="Only list memories in this exact scope")
     sub.add_parser("status", help="Show memory statistics")
 
     remember_p = sub.add_parser("remember", help="Create one atomic historical memory")
@@ -1833,6 +1888,15 @@ def main() -> int:
             print(f"Initialized AI-Verse Memory {VERSION} in {mode} mode at {root}")
         elif args.command == "rebuild":
             rebuild(root=root, mode=mode)
+        elif args.command == "search-hooks":
+            if args.list:
+                for mem_id, scope, text in memories_missing_search_hooks(root, mode, args.scope or None):
+                    print(f"{mem_id} ({scope}): {' '.join(text.split())[:500]}")
+            elif args.id and args.add:
+                print(add_search_hooks(args.id, args.add, root, mode))
+                rebuild(silent=True, root=root, mode=mode)
+            else:
+                parser.error("use --list, or give a memory id with --add")
         elif args.command == "doctor":
             return doctor(root, mode)
         elif args.command == "status":

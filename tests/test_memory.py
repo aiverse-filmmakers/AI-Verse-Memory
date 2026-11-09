@@ -91,6 +91,28 @@ class StandaloneMemoryTests(unittest.TestCase):
         spec.loader.exec_module(module)
         self.assertEqual(list(module._tag_values("equipment,~aerial,gear")), ["equipment", "gear"])
 
+    def test_search_hooks_backfill_changes_only_tags(self):
+        engine = mem._engine
+        memory_id, path, _ = mem.write_atomic(
+            text="Owns several FPV quadcopters", mem_type="fact", scope="project:test", source="unit-test",
+            tags="equipment", root=self.root, mode=mem.MODE_STANDALONE,
+        )
+        missing = [row[0] for row in engine.memories_missing_search_hooks(self.root, mem.MODE_STANDALONE)]
+        self.assertIn(memory_id, missing)
+        before = path.read_text(encoding="utf-8")
+        self.assertEqual(
+            engine.add_search_hooks(memory_id, "aerial,~gear", self.root, mem.MODE_STANDALONE),
+            "equipment,~aerial,~gear",
+        )
+        after = path.read_text(encoding="utf-8")
+        self.assertEqual(
+            before.replace("tags: equipment", "tags: equipment,~aerial,~gear"), after,
+        )
+        missing = [row[0] for row in engine.memories_missing_search_hooks(self.root, mem.MODE_STANDALONE)]
+        self.assertNotIn(memory_id, missing)
+        mem.rebuild(silent=True, root=self.root, mode=mem.MODE_STANDALONE)
+        self.assertIn(memory_id, self._recall("aerial"))
+
     def test_supersession_preserves_history(self):
         old_id, old_path, _ = mem.write_atomic(
             text="Use workflow A",
