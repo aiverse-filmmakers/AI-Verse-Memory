@@ -118,6 +118,14 @@ class StandaloneMemoryTests(unittest.TestCase):
         self.assertNotIn(memory_id, self._recall("do I own a drone"))
         self.assertIn(memory_id, self._recall("do I own a drone || quadcopters || aerial camera"))
 
+    def test_search_hooks_clean_up_tags_stored_as_a_printed_list(self):
+        memory_id, path, _ = mem.write_atomic(
+            text="Charges a day rate for filming", mem_type="fact", scope="project:test", source="unit-test",
+            tags="['rates', 'filming']", root=self.root, mode=mem.MODE_STANDALONE,
+        )
+        self.assertEqual(mem._engine.add_search_hooks(memory_id, "price", self.root, mem.MODE_STANDALONE),
+                         "rates,filming,~price")
+
     def test_supersession_preserves_history(self):
         old_id, old_path, _ = mem.write_atomic(
             text="Use workflow A",

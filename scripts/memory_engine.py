@@ -1653,7 +1653,9 @@ def add_search_hooks(mem_id: str, hooks: str, root: Optional[Path] = None, mode:
     if path is None:
         raise ValueError(f"No active canonical memory found: {mem_id}")
     meta, body = parse_markdown(path)
-    current = [item.strip() for item in re.split(r"[,;|]+", meta.get("tags", "")) if item.strip()]
+    # Some writers stored tags as a printed list, like "['a', 'b']": keep only the words.
+    current = [item.strip().strip("[]'\" ") for item in re.split(r"[,;|]+", meta.get("tags", ""))]
+    current = [item for item in current if item]
     for item in re.split(r"[,;|]+", hooks or ""):
         word = item.strip().lstrip("~").strip()
         if word and f"~{word}" not in current:
