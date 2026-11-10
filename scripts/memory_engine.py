@@ -1106,6 +1106,40 @@ def query_terms(query: str) -> List[str]:
     return kept or terms
 
 
+QUERY_SEPARATOR = "||"
+MAX_WORDINGS = 6
+
+
+def split_wordings(query: str) -> List[str]:
+    """A question may carry extra wordings separated by ||; the first is the question as asked."""
+    parts: List[str] = []
+    for part in (query or "").split(QUERY_SEPARATOR):
+        part = part.strip()
+        if part and part.casefold() not in {p.casefold() for p in parts}:
+            parts.append(part)
+    return parts[:MAX_WORDINGS] or [query]
+
+
+def fuse_ranked(lists: Sequence[Sequence[Any]], key, limit: int) -> List[Any]:
+    """Reciprocal rank fusion: items found high up by several wordings rise to the top."""
+    scores: Dict[str, float] = {}
+    first: Dict[str, Any] = {}
+    for items in lists:
+        for rank, item in enumerate(items):
+            ident = key(item)
+            scores[ident] = scores.get(ident, 0.0) + 1.0 / (60 + rank)
+            first.setdefault(ident, item)
+    ordered = sorted(scores, key=lambda ident: scores[ident], reverse=True)
+    return [first[ident] for ident in ordered][:limit]
+
+
+def recall_wordings(search, wordings: Sequence[str], limit: int, **options) -> List[Any]:
+    """Search every wording, merge the results, and put memories first."""
+    lists = [search(wording, limit=max(limit, 8), **options) for wording in wordings]
+    fused = fuse_ranked(lists, key=lambda row: row["id"], limit=max(limit, 8) * 2)
+    return sorted(fused, key=lambda row: row["kind"] != "memory")[: max(1, min(50, limit))]
+
+
 def parse_dt(value: str) -> Optional[datetime]:
     if not value:
         return None
@@ -1198,6 +1232,10 @@ def recall(
     workspace: Optional[str] = None,
     all_workspaces: bool = False,
 ) -> List[sqlite3.Row]:
+    wordings = split_wordings(query)
+    if len(wordings) > 1:
+        return recall_wordings(recall, wordings, limit, scope=scope, include_history=include_history,
+                               root=root, mode=mode, workspace=workspace, all_workspaces=all_workspaces)
     root = root or repository_root()
     mode = mode or detect_mode(root)
     p = ensure_layout(root, mode)
@@ -1252,7 +1290,8 @@ def recall(
         for row in candidates
         if _indexed_source_is_valid(row, root, mode) and row_matches_query(row, query)
     ]
-    ranked = sorted(candidates, key=lambda r: custom_score(r, query, primary_scope), reverse=True)
+    # Memories first, then everything else, each ordered by how well it matches.
+    ranked = sorted(candidates, key=lambda r: (r["kind"] != "memory", -custom_score(r, query, primary_scope)))
     conn.close()
     return ranked[: max(1, min(50, limit))]
 

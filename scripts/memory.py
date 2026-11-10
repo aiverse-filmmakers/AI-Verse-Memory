@@ -328,7 +328,7 @@ def _fts_query_terms(query: str) -> List[str]:
 
     result: List[str] = []
     seen = set()
-    for token in _engine.tokenize(query):
+    for token in _engine.query_terms(query):
         key = token.casefold()
         if key in seen:
             continue
@@ -351,6 +351,10 @@ def recall(
 ):
     """Recall through bounded FTS candidate generation that preserves semantic signals."""
 
+    wordings = _engine.split_wordings(query)
+    if len(wordings) > 1:
+        return _engine.recall_wordings(recall, wordings, limit, scope=scope, include_history=include_history,
+                                       root=root, mode=mode, workspace=workspace, all_workspaces=all_workspaces)
     root = root or _engine.repository_root()
     mode = mode or detect_mode(root)
     p = _engine.ensure_layout(root, mode)
@@ -405,10 +409,10 @@ def recall(
         for row in candidates
         if _engine._indexed_source_is_valid(row, root, mode) and _engine.row_matches_query(row, query)
     ]
+    # Memories first, then everything else, each ordered by how well it matches.
     ranked = sorted(
         candidates,
-        key=lambda row: _engine.custom_score(row, query, primary_scope),
-        reverse=True,
+        key=lambda row: (row["kind"] != "memory", -_engine.custom_score(row, query, primary_scope)),
     )
     conn.close()
     return ranked[: max(1, min(50, limit))]

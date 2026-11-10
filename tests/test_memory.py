@@ -113,6 +113,11 @@ class StandaloneMemoryTests(unittest.TestCase):
         mem.rebuild(silent=True, root=self.root, mode=mem.MODE_STANDALONE)
         self.assertIn(memory_id, self._recall("aerial"))
 
+    def test_several_wordings_find_what_one_wording_misses(self):
+        memory_id = self._remember("Owns several FPV quadcopters")
+        self.assertNotIn(memory_id, self._recall("do I own a drone"))
+        self.assertIn(memory_id, self._recall("do I own a drone || quadcopters || aerial camera"))
+
     def test_supersession_preserves_history(self):
         old_id, old_path, _ = mem.write_atomic(
             text="Use workflow A",

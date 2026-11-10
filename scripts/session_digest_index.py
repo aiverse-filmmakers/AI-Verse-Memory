@@ -347,7 +347,8 @@ def _decode_row(row: sqlite3.Row) -> Dict[str, Any]:
 def _unique_terms(engine, query: str) -> List[str]:
     seen = set()
     result = []
-    for token in engine.tokenize(query):
+    terms = engine.query_terms(query) if hasattr(engine, "query_terms") else engine.tokenize(query)
+    for token in terms:
         key = token.casefold()
         if key in seen:
             continue

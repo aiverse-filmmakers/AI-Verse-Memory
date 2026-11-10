@@ -69,6 +69,8 @@ python <memory-engine> remember --type lesson --workspace <id> --text "<lesson>"
 
 Use `--effect-id` when a durable write may be retried.
 
+Search with several wordings: put the question first, then 3 to 5 rewordings (the topic, synonyms, how the saved note might say it), separated by `||`, for example `recall "can I eat pasta? || gluten intolerance || food allergy || diet"`. Results are merged and memories come first, then chat summaries, then other documents. Open a full original only when the exact words matter.
+
 Always pass `--tags`: plain tags for real topics, plus 6 to 12 `~` search hooks, which are everyday words someone might use to ask about this memory later and that its text lacks. Example: `--tags "equipment,~aerial,~camera,~gear"`. Hooks are indexed for search and hidden from the catalog.
 
 Older memories may have no search words, and `doctor` reports how many. When asked to add them, run `search-hooks --list`, write words for each memory under the same rule, and add them with `search-hooks <id> --add "aerial,camera,gear"`. This changes only the tags, never the text or dates. Respect project boundaries with `--scope`.
