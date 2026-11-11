@@ -995,9 +995,12 @@ def _exact_source_response(
 ) -> Dict[str, Any]:
     normalized = _normalize_evidence_ref(evidence_ref)
     if normalized["record_type"] == "portable_chat_message":
+        current_scope = _chat_sources().authorized_reference_scope(
+            engine, root, mode, normalized, scope=requested_scope, workspace=workspace,
+        )
         target_scope = _authorized_scope(
             engine, requested_scope=requested_scope, workspace=workspace,
-            evidence_scope=normalized["scope"], root=root, mode=mode,
+            evidence_scope=current_scope, root=root, mode=mode,
         )
         status, row, reason = _chat_sources().exact(
             engine, root, mode, normalized,
@@ -1033,6 +1036,7 @@ def _exact_source_response(
         _chat_sources().revalidate(
             engine, root, mode, scope=requested_scope, workspace=workspace,
             required_scopes=(row["scope"],),
+            required_archives=((row["scope"], row["archive_id"]),),
         )
         return result
     if normalized["record_type"] == "indexed_record":
@@ -1337,6 +1341,7 @@ def apply(engine) -> None:
                 engine, resolved_root, resolved_mode,
                 scope=scope, workspace=workspace,
                 required_scopes={row["scope"] for row in chat_rows},
+                required_archives={(row["scope"], row["archive_id"]) for row in chat_rows},
             )
         return result
 

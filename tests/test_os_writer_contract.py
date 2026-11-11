@@ -23,7 +23,7 @@ from tests.test_progressive_recall import mem
 OS_WRITER_RELATIVE = (
     "system/extensions/packages/ai-verse-codex-learning/chat_archive.py"
 )
-OS_WRITER_PIN = "cabcb344cf9c0fe7546089f6495700385b47e3b7"
+OS_WRITER_PIN = "69b219b75970ecbc642b9ef632d6ec45bd34c696"
 OS_CHECKOUT = os.environ.get("AI_VERSE_SYNTHETIC_OS_WRITER_ROOT", "")
 
 
@@ -89,6 +89,68 @@ class PinnedOSWriterMemoryContract(unittest.TestCase):
         )
         receipt = archive.append(event)
         return event, receipt, offset + len(source)
+
+    def test_os_move_keeps_exact_pointer_and_revokes_old_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp).resolve()
+            chat = self._archive(root)
+            text = 'crossrepo exact moved café 🧪\n  original formatting '
+            self._append(chat, 1, text, 0)
+            before = self._detail(root)[0]
+            unrelated = self._archive(root, scope='operator')
+            self._append(unrelated, 1, 'unrelated private Personal note', 0)
+            checker = lambda selected: selected in {'workspace:alpha', 'workspace:beta'}
+            plan = self.os_writer.plan_move(root, chat.archive_id, 'workspace:alpha', 'workspace:beta', checker)
+            self.os_writer.move_archive(root, chat.archive_id, 'workspace:alpha', 'workspace:beta',
+                fingerprint=plan['fingerprint'], confirmed=True, authorization_check=checker)
+            self.assertEqual(self._detail(root), [])
+            with self.assertRaises(ValueError):
+                mem.progressive_recall('crossrepo', depth='source', root=root, mode=mem.MODE_NATIVE,
+                    workspace='alpha', evidence_ref=before, max_bytes=10000)
+            def exact(selected_root, ref):
+                return mem.progressive_recall('crossrepo', depth='source', root=selected_root,
+                    mode=mem.MODE_NATIVE, workspace='beta', evidence_ref=ref, max_bytes=10000)
+            after = mem.progressive_recall('crossrepo', depth='detail', root=root, mode=mem.MODE_NATIVE,
+                                          workspace='beta', max_bytes=10000)
+            item = next(row for row in after['items'] if row['record_type'] == 'portable_chat_message')
+            self.assertEqual(item['id'], before['id'])
+            self.assertEqual(exact(root, before)['source']['content'], text)
+            personal = mem.progressive_recall('unrelated', depth='detail', root=root,
+                mode=mem.MODE_NATIVE, scope='operator', max_bytes=10000)
+            personal_item = next(row for row in personal['items'] if row['record_type'] == 'portable_chat_message')
+            self.assertNotEqual(personal_item['id'], before['id'])
+            self.assertEqual(personal_item['text'], 'unrelated private Personal note')
+            legacy = dict(before)
+            legacy['id'] = 'chat-' + hashlib.sha256(('workspace:alpha\0' + chat.archive_id + '\0' +
+                            before['evidence']['source_event_id']).encode()).hexdigest()[:40]
+            self.assertEqual(exact(root, legacy)['source']['content'], text)
+            copy = Path(tmp).resolve() / 'copied-os'
+            shutil.copytree(root, copy)
+            shutil.rmtree(root)
+            self.assertEqual(exact(copy, before)['source']['content'], text)
+
+    def test_os_interrupted_move_denies_both_memory_views_until_recovered(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp).resolve()
+            chat = self._archive(root)
+            self._append(chat, 1, 'crossrepo interrupted source', 0)
+            before = self._detail(root)[0]
+            checker = lambda selected: selected in {'workspace:alpha', 'workspace:beta'}
+            plan = self.os_writer.plan_move(root, chat.archive_id, 'workspace:alpha', 'workspace:beta', checker)
+            with mock.patch.object(self.os_writer, '_finish_move', side_effect=OSError('synthetic stop')):
+                with self.assertRaises(OSError):
+                    self.os_writer.move_archive(root, chat.archive_id, 'workspace:alpha', 'workspace:beta',
+                        fingerprint=plan['fingerprint'], confirmed=True, authorization_check=checker)
+            for selected in ('alpha', 'beta'):
+                with self.assertRaises(ValueError):
+                    mem.progressive_recall('crossrepo', depth='source', root=root, mode=mem.MODE_NATIVE,
+                        workspace=selected, evidence_ref=before, max_bytes=10000)
+            self.os_writer.recover_move(root, chat.archive_id, source_scope=plan['from'], fingerprint=plan['fingerprint'],
+                                       confirmed=True, authorization_check=checker)
+            source = mem.progressive_recall('crossrepo', depth='source', root=root, mode=mem.MODE_NATIVE,
+                workspace='beta', evidence_ref=before, max_bytes=10000)
+            self.assertEqual(source['source']['content'], 'crossrepo interrupted source')
 
     def _detail(self, root, query="crossrepo"):
         result = mem.progressive_recall(

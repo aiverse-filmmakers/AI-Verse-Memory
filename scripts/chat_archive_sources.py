@@ -293,6 +293,66 @@ def _folder_safe(root: Path, folder: Path) -> bool:
     return True
 
 
+
+PLACEMENT_SCHEMA = "ai-verse.chat-placement/v1"
+
+
+def _placement_key(scope, archive_id):
+    if not isinstance(scope, str) or not (scope == "operator" or
+            (scope.startswith("workspace:") and WORKSPACE.fullmatch(scope.partition(":")[2]))):
+        raise ArchiveSourceBlocked("invalid archive scope")
+    return _sha((scope + "\0" + archive_id).encode("utf-8"))
+
+
+def _placement(root, archive_id, scope):
+    folder = root / "archives/private-chat-history/v1/placements"
+    if not _folder_safe(root, folder):
+        return None
+    key = _placement_key(scope, archive_id)
+    routes = folder / "routes"
+    if _folder_safe(root, routes):
+        route_path = routes / (key + ".json")
+        if route_path.exists() or route_path.is_symlink():
+            if route_path.lstat().st_size > 4096:
+                raise ArchiveSourceBlocked("placement route exceeds budget")
+            route = _decode(_read_bytes(root, route_path))
+            if (set(route) != {"schema", "scope", "archive_id", "placement_id"}
+                    or route["schema"] != "ai-verse.chat-route/v1" or route["scope"] != scope
+                    or route["archive_id"] != archive_id or not isinstance(route["placement_id"], str)
+                    or not SHA.fullmatch(route["placement_id"])):
+                raise ArchiveSourceBlocked("invalid placement route")
+            key = route["placement_id"]
+    path = folder / (key + ".json")
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.lstat().st_size > 64_000:
+        raise ArchiveSourceBlocked("placement receipt exceeds budget")
+    receipt = _decode(_read_bytes(root, path))
+    fields = {"schema", "archive_id", "status", "from", "to", "previous_scopes",
+              "source_sha256", "target_sha256", "fingerprint", "header", "home_scope", "placement_id"}
+    def valid_scope(value):
+        return isinstance(value, str) and (value == "operator" or (
+            value.startswith("workspace:") and WORKSPACE.fullmatch(value.partition(":")[2])))
+    if (set(receipt) != fields or receipt["schema"] != PLACEMENT_SCHEMA
+            or receipt["archive_id"] != archive_id or receipt["status"] not in {"moving", "committed"}
+            or not isinstance(receipt["previous_scopes"], list)
+            or not all(valid_scope(v) for v in [receipt["home_scope"], receipt["from"], receipt["to"], *receipt["previous_scopes"]])
+            or any(not isinstance(receipt[k], str) or not SHA.fullmatch(receipt[k])
+                   for k in ("source_sha256", "target_sha256", "fingerprint"))
+            or not isinstance(receipt["header"], dict)
+            or receipt["placement_id"] != key or key != _placement_key(receipt["home_scope"], archive_id)
+            or scope not in {receipt["home_scope"], receipt["from"], receipt["to"], *receipt["previous_scopes"]}):
+        raise ArchiveSourceBlocked("invalid placement receipt")
+    return receipt
+
+
+def _placement_guard(root, scope, archive_id, data=None):
+    receipt = _placement(root, archive_id, scope)
+    if receipt and (receipt["status"] != "committed" or receipt["to"] != scope
+                    or (data is not None and _sha(data) != receipt["target_sha256"])):
+        raise ArchiveSourceBlocked("archive placement changed or is moving")
+    return receipt
+
 def _archive_failure_kind(exc: BaseException) -> str:
     """Only static category labels leave the isolated archive read."""
     if isinstance(exc, OSError):
@@ -328,7 +388,7 @@ def _note_archive_failure(diagnostics: dict | None, exc: BaseException) -> None:
 
 
 def revalidate(engine, root: Path, mode: str, *, scope=None, workspace=None,
-               required_scopes=()) -> None:
+               required_scopes=(), required_archives=()) -> None:
     """Final disclosure guard for every scope, including earlier scan results.
 
     A workspace+operator retrieval may scan its workspace first and operator
@@ -351,6 +411,9 @@ def revalidate(engine, root: Path, mode: str, *, scope=None, workspace=None,
         if (selected in required_scopes
                 and not _folder_safe(root, _scoped_folder(root, selected))):
             raise ArchiveSourceBlocked("archive scope folder disappeared")
+    for selected, archive_id in set(required_archives):
+        _source_scope(engine, root, mode, selected, requested_scope=scope, workspace=workspace)
+        _placement_guard(root, selected, archive_id)
 
 
 def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
@@ -390,7 +453,9 @@ def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
             raise ArchiveSourceBlocked("archive source count exceeds budget")
         for path in files:
             try:
-                records = _parse_archive(_read_bytes(root, path), selected, path.stem)
+                data = _read_bytes(root, path)
+                receipt = _placement_guard(root, selected, path.stem, data)
+                records = _parse_archive(data, selected, path.stem)
             except (ArchiveSourceBlocked, OSError, UnicodeError) as exc:
                 # Only ONE file may be skipped. Re-check the authoritative
                 # scope and containing folder before suppressing a local error.
@@ -411,6 +476,7 @@ def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
             rel = path.relative_to(root).as_posix()
             for record in records:
                 result.append({"scope": selected, "path": rel,
+                               "_identity_scope": receipt["home_scope"] if receipt else selected,
                                "archive_id": path.stem, **record})
         # Authorization changes during enumeration cannot release old results.
         _source_scope(engine, root, mode, selected,
@@ -421,7 +487,8 @@ def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
     # while a later selected scope is scanned. Revalidate the entire set
     # after the last scan and BEFORE any previously collected rows escape.
     revalidate(engine, root, mode, scope=scope, workspace=workspace,
-               required_scopes=scanned_folders)
+               required_scopes=scanned_folders,
+               required_archives={(row["scope"], row["archive_id"]) for row in result})
     return result
 
 
@@ -435,7 +502,8 @@ def discover(engine, root: Path, mode: str, *, scope=None, workspace=None,
     # all selected scopes once more immediately before each disclosure.
     def finish(items, count):
         revalidate(engine, root, mode, scope=scope, workspace=workspace,
-                   required_scopes={row["scope"] for row in rows})
+                   required_scopes={row["scope"] for row in rows},
+                   required_archives={(row["scope"], row["archive_id"]) for row in rows})
         return items, count
 
     if not query:
@@ -469,7 +537,7 @@ def as_item(row: Mapping[str, Any], depth: str) -> dict:
     text = row["text"]
     boundary = 480 if depth == "summary" else 2800
     clipped = len(text) > boundary
-    identity = _sha((row["scope"] + "\0" + row["archive_id"] + "\0"
+    identity = _sha((row.get("_identity_scope", row["scope"]) + "\0" + row["archive_id"] + "\0"
                      + row["source_event_id"]).encode("utf-8"))
     item = {
         "record_type": TYPE,
@@ -489,6 +557,24 @@ def as_item(row: Mapping[str, Any], depth: str) -> dict:
     return item
 
 
+
+def authorized_reference_scope(engine, root, mode, ref, *, scope=None, workspace=None):
+    """Resolve current placement before the outer exact-source permission gate."""
+    evidence = ref.get("evidence")
+    aid = evidence.get("archive_id") if isinstance(evidence, Mapping) else None
+    if not isinstance(aid, str) or not ID.fullmatch(aid):
+        raise ValueError("invalid portable chat source identity")
+    original = str(ref.get("scope") or "")
+    receipt = _placement(root, aid, original)
+    selected = original
+    if receipt:
+        if receipt["status"] != "committed" or original not in {*receipt["previous_scopes"], receipt["to"]}:
+            raise ArchiveSourceBlocked("archive placement unavailable")
+        selected = receipt["to"]
+    # A denial never discloses the destination's name in the returned error.
+    _source_scope(engine, root, mode, selected, requested_scope=scope, workspace=workspace)
+    return selected
+
 def exact(engine, root: Path, mode: str, ref: Mapping[str, Any], *,
           scope=None, workspace=None) -> tuple[str, dict | None, str]:
     """Resolve fresh authority and source bytes for each pointer dereference.
@@ -499,9 +585,8 @@ def exact(engine, root: Path, mode: str, ref: Mapping[str, Any], *,
     evidence = ref.get("evidence")
     if not isinstance(evidence, Mapping):
         raise ValueError("portable chat source requires an evidence pointer")
-    selected = str(ref.get("scope") or "")
-    _source_scope(engine, root, mode, selected,
-                  requested_scope=scope, workspace=workspace)
+    original_scope = str(ref.get("scope") or "")
+    selected = original_scope
     aid = evidence.get("archive_id")
     eid = evidence.get("source_event_id")
     message_id = evidence.get("message_id")
@@ -509,16 +594,26 @@ def exact(engine, root: Path, mode: str, ref: Mapping[str, Any], *,
             or not isinstance(eid, str) or not ID.fullmatch(eid)
             or not isinstance(message_id, str) or not ID.fullmatch(message_id)):
         raise ValueError("invalid portable chat source identity")
+    receipt = _placement(root, aid, original_scope)
+    if receipt:
+        if receipt["status"] != "committed" or original_scope not in {*receipt["previous_scopes"], receipt["to"]}:
+            raise ArchiveSourceBlocked("archive placement unavailable")
+        selected = receipt["to"]
+    _source_scope(engine, root, mode, selected, requested_scope=scope, workspace=workspace)
     stored = _scoped_folder(root, selected) / (aid + ".jsonl")
-    if evidence.get("path") != stored.relative_to(root).as_posix():
+    original_path = _scoped_folder(root, original_scope) / (aid + ".jsonl")
+    if evidence.get("path") != original_path.relative_to(root).as_posix():
         raise ValueError("portable chat source path disagrees with scoped identity")
-    rid = "chat-" + _sha((selected + "\0" + aid + "\0" + eid).encode("utf-8"))[:40]
-    if ref.get("id") != rid:
+    rid = "chat-" + _sha(((receipt["home_scope"] if receipt else original_scope) + "\0" + aid + "\0" + eid).encode("utf-8"))[:40]
+    legacy_id = "chat-" + _sha((original_scope + "\0" + aid + "\0" + eid).encode("utf-8"))[:40]
+    if ref.get("id") not in {rid, legacy_id}:
         raise ValueError("portable chat message identity does not match pointer")
     if not _folder_safe(root, stored.parent):
         return "unavailable", None, "archive_directory_missing"
     try:
-        records = _parse_archive(_read_bytes(root, stored), selected, aid)
+        data = _read_bytes(root, stored)
+        _placement_guard(root, selected, aid, data)
+        records = _parse_archive(data, selected, aid)
     except (ArchiveSourceBlocked, OSError, UnicodeError):
         # A file may disappear or change midway through a direct read.
         # Never substitute another archive or return cached visible text.
@@ -539,16 +634,23 @@ def exact(engine, root: Path, mode: str, ref: Mapping[str, Any], *,
                 str(evidence.get("source_record_sha256") or ""),
                 evidence.get("source_byte_offset"),
                 evidence.get("block_index"), message_id)
-    current = (match["archive_record_sha256"], match["source_record_sha256"],
+    verified_hash = match["archive_record_sha256"]
+    if selected != original_scope:
+        original = {**match, "scope": original_scope}
+        original.pop("archive_record_sha256")
+        verified_hash = _sha(_json_bytes(original))
+    current = (verified_hash, match["source_record_sha256"],
                match["source_byte_offset"], match["block_index"], match["message_id"])
     if expected != current:
         return "stale", None, "immutable_message_source_changed"
     # Do not return bytes after scope was revoked while the source was opened.
     _source_scope(engine, root, mode, selected,
                   requested_scope=scope, workspace=workspace)
-    return "ok", {"scope": selected, "path": evidence["path"],
+    _placement_guard(root, selected, aid, data)
+    current_path = stored.relative_to(root).as_posix()
+    return "ok", {"scope": selected, "path": current_path,
                   "message_id": message_id, "archive_id": aid,
                   "source_event_id": eid, "text": match["text"],
                   "role": match["role"], "sequence": match["sequence"],
-                  "evidence": _pointer({"path": evidence["path"],
+                  "evidence": _pointer({"path": current_path,
                                          "archive_id": aid, **match})}, ""

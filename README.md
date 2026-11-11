@@ -279,3 +279,14 @@ The exact immutable public-beta artifact is recorded under `releases/` after the
 ## License
 
 MIT.
+
+
+Portable chat source references follow an OS-confirmed placement move only into
+an authorized current home. Memory validates the OS placement receipt, route,
+current workspace permission and exact immutable message evidence on each read.
+An interrupted move exposes neither home until recovery commits. Message IDs
+remain stable across a move, while chats with the same local archive ID in
+unrelated scopes remain distinct. Memory never performs the move or changes
+provider files. The dedicated OS writer contract exercises actual writer moves,
+old-project denial, exact old references, interrupted recovery and copied-folder
+retrieval against a pinned OS revision.
