@@ -56,6 +56,7 @@ jobs:
           path: pinned-os-writer
           sparse-checkout: |
             system/extensions/packages/ai-verse-codex-learning/chat_archive.py
+            scripts/ai_verse_host_adapter.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Verify pinned immutable OS writer head
@@ -63,6 +64,7 @@ jobs:
         run: |
           test "$(git -C pinned-os-writer rev-parse HEAD)" = "284549aa0f7c92d765394057e2af039440587af4"
           test -f pinned-os-writer/system/extensions/packages/ai-verse-codex-learning/chat_archive.py
+          test -f pinned-os-writer/scripts/ai_verse_host_adapter.py
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
