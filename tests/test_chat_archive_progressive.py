@@ -119,6 +119,17 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
             query, depth="source", workspace="alpha", root=root,
             mode=mem.MODE_NATIVE, evidence_ref=detail, max_bytes=10000, **more)
 
+    def test_archive_search_uses_shared_question_terms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            write_archive(root, "workspace:alpha", texts=[
+                "do I know which thing", "portable cosmic witness"])
+            result = self._call(root, "detail", "do I know which cosmic")
+            chats = [row for row in result["items"]
+                     if row["record_type"] == "portable_chat_message"]
+            self.assertEqual(len(chats), 1)
+            self.assertEqual(chats[0]["text"], "portable cosmic witness")
+
     def test_catalog_summary_detail_source_verbatim_and_query_bound(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)

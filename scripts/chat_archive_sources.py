@@ -440,7 +440,7 @@ def discover(engine, root: Path, mode: str, *, scope=None, workspace=None,
 
     if not query:
         return finish(rows[:max(0, limit)], len(rows))
-    terms = [part.casefold() for part in re.findall(r"\w+", query, re.UNICODE)]
+    terms = engine.query_terms(query)
     if not terms:
         return finish([], 0)
     matches = []
