@@ -544,19 +544,23 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
                 self._call(root, "catalog")["catalog"]["counts"]["portable_chat_messages"],
                 128,
             )
-            # The 129th real archive must still fail the existing global
-            # source-count cap, regardless of its lockfile.
-            excess, _ = write_archive(
-                root, "workspace:alpha", archive_id="chat-129",
-                texts=["portable excess chat witness"],
-            )
+            # A new page is explicit; the 129th chat stays retrievable without
+            # increasing the number of archives read in one request.
+            excess, _ = write_archive(root, "workspace:alpha", archive_id="chat-129",
+                                      texts=["portable excess chat witness"])
             excess.with_suffix(".lock").write_bytes(b"\0")
-            import sys
-            reader = sys.modules["_aiverse_memory_portable_chat_sources"]
-            with self.assertRaisesRegex(
-                reader.ArchiveSourceBlocked, "archive source count exceeds budget"
-            ):
-                self._call(root, "catalog")
+            first_page = self._call(root, "catalog")
+            self.assertFalse(first_page["archive_page"]["complete"])
+            self.assertEqual(first_page["archive_page"]["archives_scanned"], 128)
+            second_page = self._call(root, "catalog", archive_cursor=first_page["archive_page"]["next_cursor"])
+            self.assertTrue(second_page["archive_page"]["complete"])
+            self.assertEqual(second_page["catalog"]["counts"]["portable_chat_messages"], 1)
+            search = self._call(root, "detail", "excess")
+            self.assertEqual(search["items"], [])
+            continued = self._call(root, "detail", "excess", archive_cursor=search["archive_page"]["next_cursor"])
+            self.assertEqual(continued["items"][0]["text"], "portable excess chat witness")
+            with self.assertRaises(ValueError):
+                self._call(root, "detail", "different query", archive_cursor=search["archive_page"]["next_cursor"])
 
     def test_lockfile_flood_hits_separate_directory_enumeration_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -582,7 +586,8 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
                 # Only junk entries grow the directory; no new archive is
                 # created. Enumeration must refuse a flood, not iterate it
                 # indefinitely or expose names to the caller.
-                (first.parent / "private-sensitive-filename.lock").write_bytes(b"\0")
+                for index in range(5):
+                    (first.parent / f"private-sensitive-filename-{index}.lock").write_bytes(b"\0")
                 with self.assertRaises(reader.ArchiveSourceBlocked) as caught:
                     self._call(root, "catalog")
                 self.assertEqual(
@@ -591,7 +596,7 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
                 )
                 self.assertNotIn("private-sensitive-filename", str(caught.exception))
 
-    def test_global_archive_count_and_message_budgets_remain_fail_closed(self):
+    def test_archive_pages_preserve_bounded_counts_and_saturating_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
             write_archive(root, "workspace:alpha", archive_id="archive-a",
@@ -602,11 +607,20 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
             import sys
             reader = sys.modules["_aiverse_memory_portable_chat_sources"]
             with mock.patch.object(reader, "MAX_ARCHIVES", 1):
-                with self.assertRaises(reader.ArchiveSourceBlocked):
-                    self._call(root, "catalog")
-            with mock.patch.object(reader, "MAX_TOTAL_MESSAGES", 2):
-                with self.assertRaises(reader.ArchiveSourceBlocked):
-                    self._call(root, "detail", "portable")
+                first = self._call(root, "catalog")
+                self.assertFalse(first["archive_page"]["complete"])
+                second = self._call(root, "catalog", archive_cursor=first["archive_page"]["next_cursor"])
+                self.assertTrue(second["archive_page"]["complete"])
+                self.assertEqual(second["catalog"]["counts"]["portable_chat_messages"], 1)
+            with mock.patch.object(reader, "MAX_TOTAL_MESSAGES", 1):
+                cursor, found = None, []
+                while True:
+                    page = self._call(root, "detail", "portable", archive_cursor=cursor)
+                    found.extend(row['text'] for row in page['items'] if row['record_type'] == 'portable_chat_message')
+                    cursor = page['archive_page']['next_cursor']
+                    if cursor is None:
+                        break
+                self.assertEqual(found, ['portable one', 'portable two', 'portable three'])
             with mock.patch.object(reader, "MAX_DIAGNOSTIC_COUNT", 1):
                 # Diagnostics are saturating but healthy results still survive.
                 damaged, _ = write_archive(root, "workspace:alpha",

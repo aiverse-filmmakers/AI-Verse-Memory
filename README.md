@@ -290,3 +290,15 @@ unrelated scopes remain distinct. Memory never performs the move or changes
 provider files. The dedicated OS writer contract exercises actual writer moves,
 old-project denial, exact old references, interrupted recovery and copied-folder
 retrieval against a pinned OS revision.
+
+
+Progressive native chat discovery returns `archive_page` with `complete`,
+`next_cursor` and `archives_scanned`. Pass an unchanged `next_cursor` as the
+optional `archive_cursor` argument with the same query and visible scopes to
+continue catalog, summary or detail discovery. Each request opens at most 128
+archives and considers at most 40,000 messages. Counts and ranking describe that
+page; continue until complete before treating an empty page as no saved match.
+Changing the query or current visibility rejects the cursor. Exact source reads
+use their immutable evidence references and do not take a scan cursor. New
+messages or placement changes during a scan may require a fresh scan. The OS
+host and local Bridge query transport support this same contract.

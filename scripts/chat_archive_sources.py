@@ -8,7 +8,7 @@ persistent indexes. Per-message checksums remain stable when JSONL is appended.
 from __future__ import annotations
 
 import hashlib
-import itertools
+import heapq
 import json
 import os
 from pathlib import Path
@@ -22,14 +22,13 @@ ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 WORKSPACE = re.compile(r"^[a-z0-9][a-z0-9-]{0,127}$")
 SHA = re.compile(r"^[0-9a-f]{64}$")
 MAX_ARCHIVES = 128
-# Bounded work when listing a private archive directory. A valid OS writer
-# creates one .jsonl plus one .lock per chat, so the entry budget must not
-# count lock files against MAX_ARCHIVES. An excessive junk/lockfile flood
-# still fails closed rather than iterating an unbounded directory.
+# Per-page content reads are bounded by MAX_ARCHIVES. Directory metadata is
+# streamed into a bounded heap; legitimate archive/lock pairs do not consume
+# this separate unowned-junk budget.
 MAX_DIRECTORY_ENTRIES = MAX_ARCHIVES * 4
 # Shared v1 capacity contract, enforced by OS ChatArchive on both writer
 # entry points. Keep this aligned with OS MAX_ARCHIVE_MESSAGES/BYTES.
-# The total-message budget remains a separate global request-wide bound.
+# The total-message budget remains a separate request-page bound.
 MAX_RECORDS_PER_ARCHIVE = 40_000
 MAX_ARCHIVE_BYTES = 64_000_000
 MAX_TOTAL_MESSAGES = 40000
@@ -417,87 +416,111 @@ def revalidate(engine, root: Path, mode: str, *, scope=None, workspace=None,
 
 
 def _archives(engine, root: Path, mode: str, *, scope=None, workspace=None,
-              diagnostics: dict | None = None):
+              diagnostics: dict | None = None, cursor=None, page=None, query=""):
     if mode != engine.MODE_NATIVE:
         return []
     visible, _ = engine.allowed_scopes(
         root, mode, scope=scope, workspace=workspace, all_workspaces=False)
     if not visible:
         return []
-    result = []
-    scanned_folders = set()
+    visible = list(visible)
+    binding = _sha(_json_bytes({"scopes": visible, "query": query}))
+    if cursor is not None:
+        if (not isinstance(cursor, dict) or set(cursor) != {"schema", "binding", "scope", "archive", "sequence"}
+                or cursor.get("schema") != "ai-verse.chat-page/v1" or cursor.get("binding") != binding
+                or cursor.get("scope") not in visible or not isinstance(cursor.get("archive"), str)
+                or not ID.fullmatch(cursor["archive"]) or type(cursor.get("sequence")) is not int
+                or not 0 <= cursor["sequence"] <= MAX_RECORDS_PER_ARCHIVE):
+            raise ArchiveSourceBlocked("archive continuation does not match this request")
+    result, scanned_folders = [], set()
+    scanned, more, last = 0, False, None
     for selected in visible:
-        _source_scope(engine, root, mode, selected,
-                      requested_scope=scope, workspace=workspace)
+        if cursor and visible.index(selected) < visible.index(cursor["scope"]):
+            continue
+        _source_scope(engine, root, mode, selected, requested_scope=scope, workspace=workspace)
         folder = _scoped_folder(root, selected)
         if not _folder_safe(root, folder):
             continue
         scanned_folders.add(selected)
+        def candidates():
+            # Stream directory metadata into a fixed-size selection heap. Only
+            # this page's archives are opened. Legitimate OS lockfiles do not
+            # consume the junk budget or grow a materialized directory list.
+            junk = 0
+            for path in folder.iterdir():
+                valid = path.suffix == ".jsonl" and ID.fullmatch(path.stem)
+                if not valid:
+                    owned_lock = (path.suffix == ".lock" and ID.fullmatch(path.stem)
+                                  and path.with_suffix(".jsonl").is_file())
+                    if not owned_lock:
+                        junk += 1
+                        if junk > MAX_DIRECTORY_ENTRIES:
+                            raise ArchiveSourceBlocked("archive directory scan budget exceeded")
+                    continue
+                if cursor and selected == cursor["scope"]:
+                    if path.stem < cursor["archive"] or (path.stem == cursor["archive"]
+                            and cursor["sequence"] == MAX_RECORDS_PER_ARCHIVE):
+                        continue
+                yield path
+        remaining_files = MAX_ARCHIVES - scanned
         try:
-            # The writer creates an archive .jsonl AND a sibling .lock file.
-            # Bound total enumeration effort separately from actual archives,
-            # so 128 legitimate chats with 128 locks do not exceed the count.
-            entries = list(itertools.islice(
-                folder.iterdir(), MAX_DIRECTORY_ENTRIES + 1
-            ))
+            files = heapq.nsmallest(remaining_files + 1, candidates(), key=lambda path: path.name)
         except OSError:
             raise ArchiveSourceBlocked("private archive folder cannot be listed") from None
-        if len(entries) > MAX_DIRECTORY_ENTRIES:
-            raise ArchiveSourceBlocked("archive directory scan budget exceeded")
-        files = sorted(
-            (path for path in entries
-             if path.suffix == ".jsonl" and ID.fullmatch(path.stem)),
-            key=lambda path: path.name,
-        )
-        if len(files) > MAX_ARCHIVES:
-            raise ArchiveSourceBlocked("archive source count exceeds budget")
-        for path in files:
+        for path in files[:remaining_files]:
+            scanned += 1
+            last = {"schema": "ai-verse.chat-page/v1", "binding": binding,
+                    "scope": selected, "archive": path.stem, "sequence": MAX_RECORDS_PER_ARCHIVE}
             try:
                 data = _read_bytes(root, path)
                 receipt = _placement_guard(root, selected, path.stem, data)
                 records = _parse_archive(data, selected, path.stem)
             except (ArchiveSourceBlocked, OSError, UnicodeError) as exc:
-                # Only ONE file may be skipped. Re-check the authoritative
-                # scope and containing folder before suppressing a local error.
-                # Scope denial or a directory race is never an archive-local
-                # failure and must terminate the whole request.
-                _source_scope(engine, root, mode, selected,
-                              requested_scope=scope, workspace=workspace)
+                _source_scope(engine, root, mode, selected, requested_scope=scope, workspace=workspace)
                 if not _folder_safe(root, folder):
                     raise ArchiveSourceBlocked("archive scope folder disappeared")
                 _note_archive_failure(diagnostics, exc)
                 continue
-            _source_scope(engine, root, mode, selected,
-                          requested_scope=scope, workspace=workspace)
+            _source_scope(engine, root, mode, selected, requested_scope=scope, workspace=workspace)
             if not _folder_safe(root, folder):
                 raise ArchiveSourceBlocked("archive scope folder disappeared")
-            if len(result) + len(records) > MAX_TOTAL_MESSAGES:
-                raise ArchiveSourceBlocked("chat source scan budget exceeded")
+            if cursor and selected == cursor["scope"] and path.stem == cursor["archive"]:
+                records = [row for row in records if row["sequence"] > cursor["sequence"]]
+            remaining_messages = MAX_TOTAL_MESSAGES - len(result)
+            kept = records[:remaining_messages]
             rel = path.relative_to(root).as_posix()
-            for record in records:
+            for record in kept:
                 result.append({"scope": selected, "path": rel,
                                "_identity_scope": receipt["home_scope"] if receipt else selected,
                                "archive_id": path.stem, **record})
-        # Authorization changes during enumeration cannot release old results.
-        _source_scope(engine, root, mode, selected,
-                      requested_scope=scope, workspace=workspace)
+            if len(kept) < len(records):
+                last["sequence"] = kept[-1]["sequence"] if kept else 0
+                more = True
+                break
+            if len(result) == MAX_TOTAL_MESSAGES:
+                more = True
+                break
+        _source_scope(engine, root, mode, selected, requested_scope=scope, workspace=workspace)
         if not _folder_safe(root, folder):
             raise ArchiveSourceBlocked("archive scope folder disappeared")
-    # Critical: a scope checked at the end of its OWN scan can be revoked
-    # while a later selected scope is scanned. Revalidate the entire set
-    # after the last scan and BEFORE any previously collected rows escape.
+        if more or len(files) > remaining_files:
+            more = True
+            break
     revalidate(engine, root, mode, scope=scope, workspace=workspace,
                required_scopes=scanned_folders,
                required_archives={(row["scope"], row["archive_id"]) for row in result})
+    if page is not None:
+        page.update({"complete": not more, "next_cursor": last if more else None,
+                     "archives_scanned": scanned})
     return result
 
 
 def discover(engine, root: Path, mode: str, *, scope=None, workspace=None,
              query: str = "", limit: int = 20,
-             diagnostics: dict | None = None) -> tuple[list[dict], int]:
+             diagnostics: dict | None = None, cursor=None, page=None) -> tuple[list[dict], int]:
     """Rebuildable, read-only discovery: no persistent chat index."""
     rows = _archives(engine, root, mode, scope=scope, workspace=workspace,
-                     diagnostics=diagnostics)
+                     diagnostics=diagnostics, cursor=cursor, page=page, query=query)
     # Ranking and selecting may take time after the archive scan. Revalidate
     # all selected scopes once more immediately before each disclosure.
     def finish(items, count):

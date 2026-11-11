@@ -52,7 +52,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: aiverse-filmmakers/AI-Verse-OS
-          ref: 69b219b75970ecbc642b9ef632d6ec45bd34c696
+          ref: 284549aa0f7c92d765394057e2af039440587af4
           path: pinned-os-writer
           sparse-checkout: |
             system/extensions/packages/ai-verse-codex-learning/chat_archive.py
@@ -61,7 +61,7 @@ jobs:
       - name: Verify pinned immutable OS writer head
         shell: bash
         run: |
-          test "$(git -C pinned-os-writer rev-parse HEAD)" = "69b219b75970ecbc642b9ef632d6ec45bd34c696"
+          test "$(git -C pinned-os-writer rev-parse HEAD)" = "284549aa0f7c92d765394057e2af039440587af4"
           test -f pinned-os-writer/system/extensions/packages/ai-verse-codex-learning/chat_archive.py
       - uses: actions/setup-python@v5
         with:

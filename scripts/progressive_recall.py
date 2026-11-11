@@ -1069,6 +1069,7 @@ def _catalog_response(
     root: Path,
     mode: str,
     max_bytes: int,
+    archive_cursor=None,
 ) -> Dict[str, Any]:
     # Reserve envelope space and let B2 perform its own deterministic catalog
     # truncation. The supported minima leave enough room for the v1 envelope.
@@ -1110,11 +1111,12 @@ def _catalog_response(
             },
         }
         if mode == engine.MODE_NATIVE:
-            chat_health = {}
+            chat_health, chat_page = {}, {}
             _, chat_count = _chat_sources().discover(
                 engine, root, mode, scope=scope, workspace=workspace,
-                query="", limit=0, diagnostics=chat_health,
+                query="", limit=0, diagnostics=chat_health, cursor=archive_cursor, page=chat_page,
             )
+            response["archive_page"] = chat_page
             if chat_count:
                 response["catalog"]["counts"]["portable_chat_messages"] = chat_count
                 response["deeper_evidence_available"] = True
@@ -1173,6 +1175,7 @@ def apply(engine) -> None:
         limit: int = DEFAULT_LIMIT,
         max_bytes: Optional[int] = None,
         evidence_ref: Optional[Mapping[str, Any]] = None,
+        archive_cursor: Optional[Mapping[str, Any]] = None,
         root: Optional[Path] = None,
         mode: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -1186,6 +1189,8 @@ def apply(engine) -> None:
         resolved_root = Path(root or engine.repository_root()).resolve()
         resolved_mode = mode or engine.detect_mode(resolved_root)
 
+        if archive_cursor is not None and (resolved_mode != engine.MODE_NATIVE or depth_value == "source"):
+            raise ValueError("archive continuation requires native catalog, summary or detail depth")
         if depth_value == "source":
             return _exact_source_response(
                 engine,
@@ -1209,6 +1214,7 @@ def apply(engine) -> None:
                 root=resolved_root,
                 mode=resolved_mode,
                 max_bytes=budget,
+                archive_cursor=archive_cursor,
             )
             if resolved_mode == engine.MODE_NATIVE:
                 _chat_sources().revalidate(
@@ -1256,13 +1262,13 @@ def apply(engine) -> None:
             limit=limit_value,
         )
         chat_count = 0
-        chat_health = {}
+        chat_health, chat_page = {}, {}
         if resolved_mode == engine.MODE_NATIVE:
             chat_rows, chat_count = _chat_sources().discover(
                 engine, resolved_root, resolved_mode,
                 scope=scope, workspace=workspace,
                 query=query_value, limit=limit_value,
-                diagnostics=chat_health,
+                diagnostics=chat_health, cursor=archive_cursor, page=chat_page,
             )
             if chat_rows:
                 chat_items = [_chat_sources().as_item(row, depth_value)
@@ -1323,6 +1329,8 @@ def apply(engine) -> None:
                 },
             },
         }
+        if resolved_mode == engine.MODE_NATIVE:
+            response["archive_page"] = chat_page
         if chat_count:
             response["candidate_counts"]["portable_chat_messages"] = chat_count
             response["provenance"]["portable_chat_source"] = "ai-verse.chat-archive/v1"
@@ -1345,6 +1353,16 @@ def apply(engine) -> None:
             )
         return result
 
+    def resolve_portable_chat_scope(ref, *, scope=None, workspace=None, root=None, mode=None):
+        normalized = _normalize_evidence_ref(ref)
+        if normalized["record_type"] != "portable_chat_message":
+            raise ValueError("placement resolution requires a portable chat reference")
+        selected_root = Path(root or engine.repository_root()).resolve()
+        selected_mode = mode or engine.detect_mode(selected_root)
+        return _chat_sources().authorized_reference_scope(
+            engine, selected_root, selected_mode, normalized, scope=scope, workspace=workspace)
+
+    engine.resolve_portable_chat_scope = resolve_portable_chat_scope
     engine.progressive_recall = progressive_recall
     engine.PROGRESSIVE_RECALL_SCHEMA = PROGRESSIVE_RECALL_SCHEMA
     engine.PROGRESSIVE_RECALL_VERSION = PROGRESSIVE_RECALL_VERSION

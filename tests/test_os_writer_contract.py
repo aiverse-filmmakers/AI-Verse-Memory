@@ -23,7 +23,7 @@ from tests.test_progressive_recall import mem
 OS_WRITER_RELATIVE = (
     "system/extensions/packages/ai-verse-codex-learning/chat_archive.py"
 )
-OS_WRITER_PIN = "69b219b75970ecbc642b9ef632d6ec45bd34c696"
+OS_WRITER_PIN = "284549aa0f7c92d765394057e2af039440587af4"
 OS_CHECKOUT = os.environ.get("AI_VERSE_SYNTHETIC_OS_WRITER_ROOT", "")
 
 
@@ -128,6 +128,46 @@ class PinnedOSWriterMemoryContract(unittest.TestCase):
             shutil.copytree(root, copy)
             shutil.rmtree(root)
             self.assertEqual(exact(copy, before)['source']['content'], text)
+
+    def test_actual_os_host_resolves_moved_reference_and_archive_pages(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp).resolve()
+            chat = self._archive(root)
+            _, _, end = self._append(chat, 1, 'crossrepo first host message', 0)
+            self._append(chat, 2, 'crossrepo second host reply', end)
+            before = self._detail(root)[0]
+            checker = lambda selected: selected in {'workspace:alpha', 'workspace:beta'}
+            plan = self.os_writer.plan_move(root, chat.archive_id, 'workspace:alpha', 'workspace:beta', checker)
+            self.os_writer.move_archive(root, chat.archive_id, 'workspace:alpha', 'workspace:beta',
+                fingerprint=plan['fingerprint'], confirmed=True, authorization_check=checker)
+            destination = root / 'scripts/ai-verse-memory'
+            shutil.copytree(Path(__file__).resolve().parents[1] / 'scripts', destination,
+                            ignore=shutil.ignore_patterns('__pycache__'))
+            registry_path = root / '.aiverse/extensions/registry.json'
+            registry = json.loads(registry_path.read_text())
+            registry['extensions']['ai-verse-memory']['engine'] = 'scripts/ai-verse-memory/memory.py'
+            registry_path.write_text(json.dumps(registry))
+            spec = importlib.util.spec_from_file_location('_actual_os_placement_host',
+                        Path(OS_CHECKOUT) / 'scripts/ai_verse_host_adapter.py')
+            host_module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = host_module
+            spec.loader.exec_module(host_module)
+            host = host_module.AIverseOSHost(root, skills_root=root/'unused-skills', local_skills_root=root/'unused-local')
+            request = {'version': 'memory.progressive-recall.v1', 'depth': 'source',
+                       'scope': 'workspace:beta', 'query': 'crossrepo', 'max_bytes': 10000, 'evidence_ref': before}
+            source = host.retrieve_history_progressive(request)
+            self.assertEqual(source['source']['content'], 'crossrepo first host message')
+            with self.assertRaises(host_module.AdapterError):
+                host.retrieve_history_progressive({**request, 'scope': 'workspace:alpha'})
+            reader = sys.modules['_aiverse_memory_portable_chat_sources']
+            with mock.patch.object(reader, 'MAX_TOTAL_MESSAGES', 1):
+                query = {'version': 'memory.progressive-recall.v1', 'depth': 'detail',
+                         'scope': 'workspace:beta', 'query': 'crossrepo', 'max_bytes': 10000}
+                first = host.retrieve_history_progressive(query)
+                self.assertFalse(first['archive_page']['complete'])
+                second = host.retrieve_history_progressive({**query, 'archive_cursor': first['archive_page']['next_cursor']})
+                self.assertEqual(second['items'][0]['text'], 'crossrepo second host reply')
 
     def test_os_interrupted_move_denies_both_memory_views_until_recovered(self):
         from unittest import mock
