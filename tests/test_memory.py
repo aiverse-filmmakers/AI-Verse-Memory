@@ -61,6 +61,71 @@ class StandaloneMemoryTests(unittest.TestCase):
         rows_after = mem.recall("project updates", "project:test", 8, False, self.root, mem.MODE_STANDALONE)
         self.assertTrue(any(r["id"] == first_id for r in rows_after))
 
+    def _remember(self, text, tags=""):
+        memory_id, _, _ = mem.write_atomic(
+            text=text, mem_type="fact", scope="project:test", source="unit-test", tags=tags,
+            root=self.root, mode=mem.MODE_STANDALONE,
+        )
+        return memory_id
+
+    def _recall(self, query):
+        rows = mem.recall(query, "project:test", 8, False, self.root, mem.MODE_STANDALONE)
+        return [r["id"] for r in rows]
+
+    def test_filler_words_do_not_match_memories(self):
+        memory_id = self._remember("I do have the recipe for what we made")
+        self.assertNotIn(memory_id, self._recall("what do I have for zebra"))
+
+    def test_question_of_only_filler_words_still_searches(self):
+        memory_id = self._remember("I do have the recipe for what we made")
+        self.assertIn(memory_id, self._recall("what do I have"))
+
+    def test_search_hook_tags_are_found_by_recall(self):
+        memory_id = self._remember("Owns several FPV quadcopters", tags="equipment,~aerial")
+        self.assertIn(memory_id, self._recall("aerial"))
+
+    def test_search_hook_tags_stay_out_of_catalog_topics(self):
+        spec = importlib.util.spec_from_file_location("orientation_map_under_test", ROOT / "scripts" / "orientation_map.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        self.assertEqual(list(module._tag_values("equipment,~aerial,gear")), ["equipment", "gear"])
+
+    def test_search_hooks_backfill_changes_only_tags(self):
+        engine = mem._engine
+        memory_id, path, _ = mem.write_atomic(
+            text="Owns several FPV quadcopters", mem_type="fact", scope="project:test", source="unit-test",
+            tags="equipment", root=self.root, mode=mem.MODE_STANDALONE,
+        )
+        missing = [row[0] for row in engine.memories_missing_search_hooks(self.root, mem.MODE_STANDALONE)]
+        self.assertIn(memory_id, missing)
+        before = path.read_text(encoding="utf-8")
+        self.assertEqual(
+            engine.add_search_hooks(memory_id, "aerial,~gear", self.root, mem.MODE_STANDALONE),
+            "equipment,~aerial,~gear",
+        )
+        after = path.read_text(encoding="utf-8")
+        self.assertEqual(
+            before.replace("tags: equipment", "tags: equipment,~aerial,~gear"), after,
+        )
+        missing = [row[0] for row in engine.memories_missing_search_hooks(self.root, mem.MODE_STANDALONE)]
+        self.assertNotIn(memory_id, missing)
+        mem.rebuild(silent=True, root=self.root, mode=mem.MODE_STANDALONE)
+        self.assertIn(memory_id, self._recall("aerial"))
+
+    def test_several_wordings_find_what_one_wording_misses(self):
+        memory_id = self._remember("Owns several FPV quadcopters")
+        self.assertNotIn(memory_id, self._recall("do I own a drone"))
+        self.assertIn(memory_id, self._recall("do I own a drone || quadcopters || aerial camera"))
+
+    def test_search_hooks_clean_up_tags_stored_as_a_printed_list(self):
+        memory_id, path, _ = mem.write_atomic(
+            text="Charges a day rate for filming", mem_type="fact", scope="project:test", source="unit-test",
+            tags="['rates', 'filming']", root=self.root, mode=mem.MODE_STANDALONE,
+        )
+        self.assertEqual(mem._engine.add_search_hooks(memory_id, "price", self.root, mem.MODE_STANDALONE),
+                         "rates,filming,~price")
+
     def test_supersession_preserves_history(self):
         old_id, old_path, _ = mem.write_atomic(
             text="Use workflow A",

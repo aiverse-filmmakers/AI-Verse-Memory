@@ -14,7 +14,8 @@ jobs:
         # Keep Python 3.9 coverage on supported Ubuntu 24.04, not a skipped job.
         os: [ubuntu-24.04, macos-latest, windows-latest]
         python-version: ["3.9", "3.12"]
-    runs-on: ${{ matrix.os }}
+    # ubuntu-latest moved to 26.04, which has no Python 3.9; pinned so the check name stays the same.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -253,7 +254,7 @@ jobs:
           MEMORY_ROOT="$PWD"
           TARGET="$RUNNER_TEMP/ai-verse-os-current"
           rm -rf "$TARGET"
-          git clone --depth 1 https://github.com/aiverse-filmmakers/AI-Verse-OS.git "$TARGET"
+          git clone https://github.com/aiverse-filmmakers/AI-Verse-OS.git "$TARGET"
 
           python "$MEMORY_ROOT/scripts/install.py" --target "$TARGET" --source-dir "$MEMORY_ROOT"
 

@@ -291,26 +291,16 @@ def _interleave(
     depth: str,
     limit: int,
 ) -> List[Dict[str, Any]]:
-    result: List[Dict[str, Any]] = []
-    count = max(len(digests), len(records))
-    for index in range(count):
-        if index < len(digests):
-            result.append(
-                _digest_summary(digests[index])
-                if depth == "summary"
-                else _digest_detail(digests[index])
-            )
-            if len(result) >= limit:
-                break
-        if index < len(records):
-            result.append(
-                _record_summary(records[index])
-                if depth == "summary"
-                else _record_detail(records[index])
-            )
-            if len(result) >= limit:
-                break
-    return result
+    """Memories first, then chat summaries, then other documents."""
+    record = _record_summary if depth == "summary" else _record_detail
+    digest = _digest_summary if depth == "summary" else _digest_detail
+    memories = [record(row) for row in records if _row_value(row, "kind") == "memory"]
+    others = [record(row) for row in records if _row_value(row, "kind") != "memory"]
+    summaries = [digest(item) for item in digests]
+    # Memories lead, but matching chat summaries always keep about a third of the places.
+    reserved = min(len(summaries), max(1, limit // 3))
+    lead = memories[: max(0, limit - reserved)]
+    return (lead + summaries + memories[len(lead):] + others)[:limit]
 
 
 
@@ -1230,13 +1220,20 @@ def apply(engine) -> None:
             scope,
             workspace,
         )
-        digests = engine.recall_session_digests(
-            query_value,
-            scope=scope,
-            workspace=workspace,
+        digests = engine.fuse_ranked(
+            [
+                engine.recall_session_digests(
+                    wording,
+                    scope=scope,
+                    workspace=workspace,
+                    limit=limit_value,
+                    root=resolved_root,
+                    mode=resolved_mode,
+                )
+                for wording in engine.split_wordings(query_value)
+            ],
+            key=lambda item: str(item.get("id") or item.get("digest_id") or id(item)),
             limit=limit_value,
-            root=resolved_root,
-            mode=resolved_mode,
         )
         records = engine.recall(
             query_value,
