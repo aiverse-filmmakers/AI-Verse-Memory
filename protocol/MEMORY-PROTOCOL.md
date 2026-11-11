@@ -123,7 +123,7 @@ The map contains only compact metadata:
 - counts of active atomic Memory, indexed owner sources, and session digests;
 - active Memory type counts;
 - indexed source kind counts and a tiny set of source routes;
-- explicit Memory tags and session-digest topics;
+- explicit Memory tags (excluding `~` search-only hooks) and session-digest topics;
 - recent digest identifiers/topics for escalation to session-level history.
 
 It does not copy atomic Memory text, current-source bodies, digest summaries, or raw transcripts. Workspace maps follow existing Memory visibility rules: the bound workspace plus operator context, never another workspace.

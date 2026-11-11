@@ -10,9 +10,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Ubuntu 26.04 does not yet provide actions/setup-python Python 3.9.
+        # Keep Python 3.9 coverage on supported Ubuntu 24.04, not a skipped job.
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         python-version: ["3.9", "3.12"]
-    runs-on: ${{ matrix.os }}
+    # ubuntu-latest moved to 26.04, which has no Python 3.9; pinned so the check name stays the same.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,6 +31,7 @@ jobs:
           python -m py_compile scripts/session_promotion.py
           python -m py_compile scripts/orientation_map.py
           python -m py_compile scripts/progressive_recall.py
+          python -m py_compile scripts/chat_archive_sources.py
           python -m py_compile scripts/relationship_projection.py
           python -m py_compile scripts/neighbor_recall_benchmark.py
           python -m py_compile scripts/component.py
@@ -36,6 +40,38 @@ jobs:
           python -m py_compile scripts/os_compat.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+
+  os-pr122-writer-contract:
+    name: Pinned OS PR 122 writer to Memory exact-source contract (synthetic)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout exact OS PR 122 source code, no installation
+        uses: actions/checkout@v4
+        with:
+          repository: aiverse-filmmakers/AI-Verse-OS
+          ref: 284549aa0f7c92d765394057e2af039440587af4
+          path: pinned-os-writer
+          sparse-checkout: |
+            system/extensions/packages/ai-verse-codex-learning/chat_archive.py
+            scripts/ai_verse_host_adapter.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Verify pinned immutable OS writer head
+        shell: bash
+        run: |
+          test "$(git -C pinned-os-writer rev-parse HEAD)" = "284549aa0f7c92d765394057e2af039440587af4"
+          test -f pinned-os-writer/system/extensions/packages/ai-verse-codex-learning/chat_archive.py
+          test -f pinned-os-writer/scripts/ai_verse_host_adapter.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run cross-repo synthetic writer and Memory source checks
+        env:
+          AI_VERSE_SYNTHETIC_OS_WRITER_ROOT: ${{ github.workspace }}/pinned-os-writer
+        run: python -m unittest -v tests.test_os_writer_contract
 
   public-beta-acceptance:
     strategy:
@@ -91,6 +127,7 @@ jobs:
           subprocess.run(cmd, check=True, env=env)
           subprocess.run(cmd, check=True, env=env)
           assert (target / ".ai-verse-memory/memory.py").exists()
+          assert (target / ".ai-verse-memory/chat_archive_sources.py").is_file()
           assert (target / "AGENTS.md").read_text().count("AI-VERSE-MEMORY:START") == 1
           assert (target / "CLAUDE.md").read_text().count("AI-VERSE-MEMORY:START") == 1
           subprocess.run([os.sys.executable, str(target / ".ai-verse-memory/memory.py"), "--root", str(target), "doctor"], check=True)
@@ -117,6 +154,7 @@ jobs:
 
           engine = target / "scripts/ai-verse-memory/memory.py"
           assert engine.exists()
+          assert (engine.parent / "chat_archive_sources.py").is_file()
           assert not (target / ".ai-verse-memory").exists()
           assert (target / "AGENTS.md").read_text(encoding="utf-8") == agents_before
           assert (target / "skills/registry.yaml").read_text(encoding="utf-8") == registry_before
@@ -218,7 +256,7 @@ jobs:
           MEMORY_ROOT="$PWD"
           TARGET="$RUNNER_TEMP/ai-verse-os-current"
           rm -rf "$TARGET"
-          git clone --depth 1 https://github.com/aiverse-filmmakers/AI-Verse-OS.git "$TARGET"
+          git clone https://github.com/aiverse-filmmakers/AI-Verse-OS.git "$TARGET"
 
           python "$MEMORY_ROOT/scripts/install.py" --target "$TARGET" --source-dir "$MEMORY_ROOT"
 

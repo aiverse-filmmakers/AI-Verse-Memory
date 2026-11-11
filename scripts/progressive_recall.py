@@ -11,8 +11,10 @@ API to source depth. Legacy recall() is not modified here.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
@@ -34,6 +36,24 @@ DETAIL_DIGEST_CHARS = 2200
 MAX_DETAIL_LIST_ITEMS = 8
 MAX_RELATION_NEIGHBORS = 4
 MAX_RELATION_SCAN = 200
+
+
+def _chat_sources():
+    """Load the read-only OS archive fixture adapter without copying archives."""
+    name = "_aiverse_memory_portable_chat_sources"
+    module = sys.modules.get(name)
+    if module is None:
+        path = Path(__file__).resolve().with_name("chat_archive_sources.py")
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError("portable chat source reader unavailable or unsafe")
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("portable chat source reader cannot be loaded")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
+
 
 _HISTORY_INTENT_TERMS = frozenset({
     "before", "previous", "previously", "prior", "old", "older", "history",
@@ -271,26 +291,16 @@ def _interleave(
     depth: str,
     limit: int,
 ) -> List[Dict[str, Any]]:
-    result: List[Dict[str, Any]] = []
-    count = max(len(digests), len(records))
-    for index in range(count):
-        if index < len(digests):
-            result.append(
-                _digest_summary(digests[index])
-                if depth == "summary"
-                else _digest_detail(digests[index])
-            )
-            if len(result) >= limit:
-                break
-        if index < len(records):
-            result.append(
-                _record_summary(records[index])
-                if depth == "summary"
-                else _record_detail(records[index])
-            )
-            if len(result) >= limit:
-                break
-    return result
+    """Memories first, then chat summaries, then other documents."""
+    record = _record_summary if depth == "summary" else _record_detail
+    digest = _digest_summary if depth == "summary" else _digest_detail
+    memories = [record(row) for row in records if _row_value(row, "kind") == "memory"]
+    others = [record(row) for row in records if _row_value(row, "kind") != "memory"]
+    summaries = [digest(item) for item in digests]
+    # Memories lead, but matching chat summaries always keep about a third of the places.
+    reserved = min(len(summaries), max(1, limit // 3))
+    lead = memories[: max(0, limit - reserved)]
+    return (lead + summaries + memories[len(lead):] + others)[:limit]
 
 
 
@@ -516,8 +526,8 @@ def _normalize_evidence_ref(value: Optional[Mapping[str, Any]]) -> Dict[str, Any
     record_id = str(value.get("id") or "").strip()
     scope = str(value.get("scope") or "").strip()
     evidence = value.get("evidence")
-    if record_type not in {"indexed_record", "session_digest"}:
-        raise ValueError("evidence_ref record_type must be indexed_record or session_digest")
+    if record_type not in {"indexed_record", "session_digest", "portable_chat_message"}:
+        raise ValueError("evidence_ref record_type must be indexed_record, session_digest or portable_chat_message")
     if not record_id:
         raise ValueError("evidence_ref requires id")
     if not scope:
@@ -984,6 +994,51 @@ def _exact_source_response(
     budget: int,
 ) -> Dict[str, Any]:
     normalized = _normalize_evidence_ref(evidence_ref)
+    if normalized["record_type"] == "portable_chat_message":
+        current_scope = _chat_sources().authorized_reference_scope(
+            engine, root, mode, normalized, scope=requested_scope, workspace=workspace,
+        )
+        target_scope = _authorized_scope(
+            engine, requested_scope=requested_scope, workspace=workspace,
+            evidence_scope=current_scope, root=root, mode=mode,
+        )
+        status, row, reason = _chat_sources().exact(
+            engine, root, mode, normalized,
+            scope=requested_scope, workspace=workspace,
+        )
+        if status != "ok":
+            return _source_failure(
+                scope=target_scope, budget=budget,
+                record_type="portable_chat_message", record_id=normalized["id"],
+                status=status, reason=reason,
+            )
+        base = {
+            "schema_version": PROGRESSIVE_RECALL_SCHEMA,
+            "api_version": PROGRESSIVE_RECALL_VERSION,
+            "depth": "source", "scope": target_scope,
+            "budget_bytes": budget, "status": "ok", "reason": None,
+            "exact_evidence": True, "source_depth_available": True,
+            "record_type": "portable_chat_message", "id": normalized["id"],
+            "role": row["role"], "message_id": row["message_id"],
+            "record_scope": row["scope"], "evidence": row["evidence"],
+            "provenance": {
+                "owner": "ai-verse-os", "reader": "ai-verse-memory",
+                "kind": "exact_portable_chat_message",
+                "scope_revalidated": True, "containment_revalidated": True,
+                "version_revalidated": True, "content_returned": True,
+            },
+        }
+        result = _fit_exact_source_response(
+            engine, base=base, text=row["text"], query=query, budget=budget,
+        )
+        # Formatting a large exact-source excerpt is not a scope lease.
+        # Revalidate after it and before exposing source text to the caller.
+        _chat_sources().revalidate(
+            engine, root, mode, scope=requested_scope, workspace=workspace,
+            required_scopes=(row["scope"],),
+            required_archives=((row["scope"], row["archive_id"]),),
+        )
+        return result
     if normalized["record_type"] == "indexed_record":
         return _indexed_exact_source(
             engine,
@@ -1014,6 +1069,7 @@ def _catalog_response(
     root: Path,
     mode: str,
     max_bytes: int,
+    archive_cursor=None,
 ) -> Dict[str, Any]:
     # Reserve envelope space and let B2 perform its own deterministic catalog
     # truncation. The supported minima leave enough room for the v1 envelope.
@@ -1054,6 +1110,21 @@ def _catalog_response(
                 "source_fingerprint": catalog["source_fingerprint"],
             },
         }
+        if mode == engine.MODE_NATIVE:
+            chat_health, chat_page = {}, {}
+            _, chat_count = _chat_sources().discover(
+                engine, root, mode, scope=scope, workspace=workspace,
+                query="", limit=0, diagnostics=chat_health, cursor=archive_cursor, page=chat_page,
+            )
+            response["archive_page"] = chat_page
+            if chat_count:
+                response["catalog"]["counts"]["portable_chat_messages"] = chat_count
+                response["deeper_evidence_available"] = True
+                response["provenance"]["portable_chat_source"] = "ai-verse.chat-archive/v1"
+            if chat_health.get("skipped", 0):
+                # Count-only, saturating error buckets; no source paths,
+                # archive names, message bodies or exception details.
+                response["provenance"]["archive_skips"] = chat_health
         if _serialized_bytes(response) <= max_bytes:
             return response
         if catalog_budget <= int(engine.ORIENTATION_MAP_MIN_MAX_BYTES):
@@ -1104,6 +1175,7 @@ def apply(engine) -> None:
         limit: int = DEFAULT_LIMIT,
         max_bytes: Optional[int] = None,
         evidence_ref: Optional[Mapping[str, Any]] = None,
+        archive_cursor: Optional[Mapping[str, Any]] = None,
         root: Optional[Path] = None,
         mode: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -1117,6 +1189,8 @@ def apply(engine) -> None:
         resolved_root = Path(root or engine.repository_root()).resolve()
         resolved_mode = mode or engine.detect_mode(resolved_root)
 
+        if archive_cursor is not None and (resolved_mode != engine.MODE_NATIVE or depth_value == "source"):
+            raise ValueError("archive continuation requires native catalog, summary or detail depth")
         if depth_value == "source":
             return _exact_source_response(
                 engine,
@@ -1133,14 +1207,21 @@ def apply(engine) -> None:
             raise ValueError("evidence_ref is only valid for source depth")
 
         if depth_value == "catalog":
-            return _catalog_response(
+            response = _catalog_response(
                 engine,
                 scope=scope,
                 workspace=workspace,
                 root=resolved_root,
                 mode=resolved_mode,
                 max_bytes=budget,
+                archive_cursor=archive_cursor,
             )
+            if resolved_mode == engine.MODE_NATIVE:
+                _chat_sources().revalidate(
+                    engine, resolved_root, resolved_mode,
+                    scope=scope, workspace=workspace,
+                )
+            return response
 
         target_scope = _target_scope(
             engine,
@@ -1149,13 +1230,20 @@ def apply(engine) -> None:
             scope,
             workspace,
         )
-        digests = engine.recall_session_digests(
-            query_value,
-            scope=scope,
-            workspace=workspace,
+        digests = engine.fuse_ranked(
+            [
+                engine.recall_session_digests(
+                    wording,
+                    scope=scope,
+                    workspace=workspace,
+                    limit=limit_value,
+                    root=resolved_root,
+                    mode=resolved_mode,
+                )
+                for wording in engine.split_wordings(query_value)
+            ],
+            key=lambda item: str(item.get("id") or item.get("digest_id") or id(item)),
             limit=limit_value,
-            root=resolved_root,
-            mode=resolved_mode,
         )
         records = engine.recall(
             query_value,
@@ -1173,6 +1261,26 @@ def apply(engine) -> None:
             depth=depth_value,
             limit=limit_value,
         )
+        chat_count = 0
+        chat_health, chat_page = {}, {}
+        if resolved_mode == engine.MODE_NATIVE:
+            chat_rows, chat_count = _chat_sources().discover(
+                engine, resolved_root, resolved_mode,
+                scope=scope, workspace=workspace,
+                query=query_value, limit=limit_value,
+                diagnostics=chat_health, cursor=archive_cursor, page=chat_page,
+            )
+            if chat_rows:
+                chat_items = [_chat_sources().as_item(row, depth_value)
+                              for row in chat_rows]
+                old_items = items
+                items = []
+                for index in range(max(len(chat_items), len(old_items))):
+                    if index < len(chat_items):
+                        items.append(chat_items[index])
+                    if index < len(old_items):
+                        items.append(old_items[index])
+                items = items[:limit_value]
         relationship_types = (
             _relationship_intent(engine, query_value)
             if depth_value == "detail"
@@ -1221,13 +1329,40 @@ def apply(engine) -> None:
                 },
             },
         }
-        return _append_with_budget(
+        if resolved_mode == engine.MODE_NATIVE:
+            response["archive_page"] = chat_page
+        if chat_count:
+            response["candidate_counts"]["portable_chat_messages"] = chat_count
+            response["provenance"]["portable_chat_source"] = "ai-verse.chat-archive/v1"
+        if chat_health.get("skipped", 0):
+            response["provenance"]["archive_skips"] = chat_health
+        result = _append_with_budget(
             response,
             items,
             budget,
             total_candidates=len(items),
         )
+        if resolved_mode == engine.MODE_NATIVE:
+            # A workspace may become inactive after discovery while other
+            # sources and response budgets are still being processed.
+            _chat_sources().revalidate(
+                engine, resolved_root, resolved_mode,
+                scope=scope, workspace=workspace,
+                required_scopes={row["scope"] for row in chat_rows},
+                required_archives={(row["scope"], row["archive_id"]) for row in chat_rows},
+            )
+        return result
 
+    def resolve_portable_chat_scope(ref, *, scope=None, workspace=None, root=None, mode=None):
+        normalized = _normalize_evidence_ref(ref)
+        if normalized["record_type"] != "portable_chat_message":
+            raise ValueError("placement resolution requires a portable chat reference")
+        selected_root = Path(root or engine.repository_root()).resolve()
+        selected_mode = mode or engine.detect_mode(selected_root)
+        return _chat_sources().authorized_reference_scope(
+            engine, selected_root, selected_mode, normalized, scope=scope, workspace=workspace)
+
+    engine.resolve_portable_chat_scope = resolve_portable_chat_scope
     engine.progressive_recall = progressive_recall
     engine.PROGRESSIVE_RECALL_SCHEMA = PROGRESSIVE_RECALL_SCHEMA
     engine.PROGRESSIVE_RECALL_VERSION = PROGRESSIVE_RECALL_VERSION

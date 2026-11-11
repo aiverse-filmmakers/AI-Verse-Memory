@@ -1088,6 +1088,58 @@ def tokenize(value: str) -> List[str]:
     return [t.lower() for t in re.findall(r"[A-Za-z0-9_\-]{2,}", value)]
 
 
+_QUERY_STOPWORDS = frozenset(
+    "a an and are as at be been but by can could did do does for from had has have how i if in into is it its "
+    "me my of on or our should so than that the their them then there these they this to was we were what when "
+    "where which who whom why will with would you your any about after again all also am before being both each "
+    "get got just more most much no not now off once only other out over own same some such too up very".split()
+)
+
+
+def query_terms(query: str) -> List[str]:
+    """Search words from a question with filler words removed.
+
+    Falls back to every word when the question is nothing but filler.
+    """
+    terms = tokenize(query)
+    kept = [t for t in terms if t not in _QUERY_STOPWORDS]
+    return kept or terms
+
+
+QUERY_SEPARATOR = "||"
+MAX_WORDINGS = 6
+
+
+def split_wordings(query: str) -> List[str]:
+    """A question may carry extra wordings separated by ||; the first is the question as asked."""
+    parts: List[str] = []
+    for part in (query or "").split(QUERY_SEPARATOR):
+        part = part.strip()
+        if part and part.casefold() not in {p.casefold() for p in parts}:
+            parts.append(part)
+    return parts[:MAX_WORDINGS] or [query]
+
+
+def fuse_ranked(lists: Sequence[Sequence[Any]], key, limit: int) -> List[Any]:
+    """Reciprocal rank fusion: items found high up by several wordings rise to the top."""
+    scores: Dict[str, float] = {}
+    first: Dict[str, Any] = {}
+    for items in lists:
+        for rank, item in enumerate(items):
+            ident = key(item)
+            scores[ident] = scores.get(ident, 0.0) + 1.0 / (60 + rank)
+            first.setdefault(ident, item)
+    ordered = sorted(scores, key=lambda ident: scores[ident], reverse=True)
+    return [first[ident] for ident in ordered][:limit]
+
+
+def recall_wordings(search, wordings: Sequence[str], limit: int, **options) -> List[Any]:
+    """Search every wording, merge the results, and put memories first."""
+    lists = [search(wording, limit=max(limit, 8), **options) for wording in wordings]
+    fused = fuse_ranked(lists, key=lambda row: row["id"], limit=max(limit, 8) * 2)
+    return sorted(fused, key=lambda row: row["kind"] != "memory")[: max(1, min(50, limit))]
+
+
 def parse_dt(value: str) -> Optional[datetime]:
     if not value:
         return None
@@ -1111,7 +1163,7 @@ def row_haystack(row: sqlite3.Row) -> str:
 
 
 def row_matches_query(row: sqlite3.Row, query: str) -> bool:
-    terms = set(tokenize(query))
+    terms = set(query_terms(query))
     if not terms:
         return False
     hay = row_haystack(row)
@@ -1146,11 +1198,13 @@ def allowed_scopes(
 
 
 def custom_score(row: sqlite3.Row, query: str, primary_scope: Optional[str]) -> float:
-    q = set(tokenize(query))
+    q = set(query_terms(query))
     hay = row_haystack(row)
     words = set(tokenize(hay))
     overlap = len(q & words)
     score = overlap * 2.0
+    if row["kind"] == "memory":
+        score += 2.0
     if query.strip().lower() in hay:
         score += 4.0
     if primary_scope:
@@ -1178,6 +1232,10 @@ def recall(
     workspace: Optional[str] = None,
     all_workspaces: bool = False,
 ) -> List[sqlite3.Row]:
+    wordings = split_wordings(query)
+    if len(wordings) > 1:
+        return recall_wordings(recall, wordings, limit, scope=scope, include_history=include_history,
+                               root=root, mode=mode, workspace=workspace, all_workspaces=all_workspaces)
     root = root or repository_root()
     mode = mode or detect_mode(root)
     p = ensure_layout(root, mode)
@@ -1198,7 +1256,7 @@ def recall(
         params.extend(scopes)
 
     candidates: List[sqlite3.Row] = []
-    terms = tokenize(query)
+    terms = query_terms(query)
     used_fts = False
     if fts and terms:
         fts_query = " OR ".join(f'"{t.replace(chr(34), "")}"' for t in terms[:12])
@@ -1232,7 +1290,8 @@ def recall(
         for row in candidates
         if _indexed_source_is_valid(row, root, mode) and row_matches_query(row, query)
     ]
-    ranked = sorted(candidates, key=lambda r: custom_score(r, query, primary_scope), reverse=True)
+    # Memories first, then everything else, each ordered by how well it matches.
+    ranked = sorted(candidates, key=lambda r: (r["kind"] != "memory", -custom_score(r, query, primary_scope)))
     conn.close()
     return ranked[: max(1, min(50, limit))]
 
@@ -1565,6 +1624,50 @@ def integration_checks(root: Path, mode: str) -> List[Tuple[str, bool, str, bool
     return checks
 
 
+def _has_search_hooks(tags: str) -> bool:
+    return any(item.strip().startswith("~") for item in re.split(r"[,;|]+", tags or ""))
+
+
+def memories_missing_search_hooks(
+    root: Optional[Path] = None, mode: Optional[str] = None, scope: Optional[str] = None
+) -> List[Tuple[str, str, str]]:
+    """Active memories with no ~ search hooks, as (id, scope, text)."""
+    root = root or repository_root()
+    mode = mode or detect_mode(root)
+    missing = []
+    for path in iter_atomic_files(root, mode):
+        meta, body = parse_markdown(path)
+        if not meta or meta.get("status", "active") != "active" or _has_search_hooks(meta.get("tags", "")):
+            continue
+        if scope and meta.get("scope") != scope:
+            continue
+        missing.append((path.stem, meta.get("scope", ""), body.replace("# Memory", "", 1).strip()))
+    return sorted(missing)
+
+
+def add_search_hooks(mem_id: str, hooks: str, root: Optional[Path] = None, mode: Optional[str] = None) -> str:
+    """Add ~ search hooks to one memory. Changes only its tags; dates and text stay as they were."""
+    root = root or repository_root()
+    mode = mode or detect_mode(root)
+    path = locate_memory(mem_id, root, mode)
+    if path is None:
+        raise ValueError(f"No active canonical memory found: {mem_id}")
+    meta, body = parse_markdown(path)
+    # Some writers stored tags as a printed list, like "['a', 'b']": keep only the words.
+    current = [item.strip().strip("[]'\" ") for item in re.split(r"[,;|]+", meta.get("tags", ""))]
+    current = [item for item in current if item]
+    for item in re.split(r"[,;|]+", hooks or ""):
+        word = item.strip().lstrip("~").strip()
+        if word and f"~{word}" not in current:
+            current.append(f"~{word}")
+    tags = ",".join(current)
+    if len(tags) > 300:
+        raise ValueError("Tags must stay under 300 characters")
+    meta["tags"] = tags
+    path.write_text(render_frontmatter(meta) + "\n\n" + body.strip() + "\n", encoding="utf-8")
+    return tags
+
+
 def doctor(root: Optional[Path] = None, mode: Optional[str] = None) -> int:
     root = root or repository_root()
     mode = mode or detect_mode(root)
@@ -1611,6 +1714,14 @@ def doctor(root: Optional[Path] = None, mode: Optional[str] = None) -> int:
         checks.extend(integration_checks(root, mode))
 
     checks.append(("Migration completed", p["migration"].exists(), "optional on fresh repositories", False))
+    missing_hooks = len(memories_missing_search_hooks(root, mode))
+    checks.append((
+        "Search words on memories",
+        missing_hooks == 0,
+        "every active memory has search words" if missing_hooks == 0
+        else f"{missing_hooks} memories have none; list them with search-hooks --list and add words with search-hooks ID --add",
+        False,
+    ))
 
     print(f"AI-Verse Memory {VERSION}")
     failures = 0
@@ -1730,6 +1841,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init", help="Create the memory/index layout for the detected mode")
     sub.add_parser("rebuild", help="Rebuild SQLite from canonical Markdown and scoped OS sources")
     sub.add_parser("doctor", help="Validate storage, index, isolation, and native OS integration")
+    hooks_p = sub.add_parser("search-hooks", help="List memories with no ~ search words, or add words to one memory")
+    hooks_p.add_argument("id", nargs="?", help="Memory id to add search words to")
+    hooks_p.add_argument("--list", action="store_true", help="List active memories that have no search words")
+    hooks_p.add_argument("--add", default="", help="Comma separated search words")
+    hooks_p.add_argument("--scope", default="", help="Only list memories in this exact scope")
     sub.add_parser("status", help="Show memory statistics")
 
     remember_p = sub.add_parser("remember", help="Create one atomic historical memory")
@@ -1813,6 +1929,15 @@ def main() -> int:
             print(f"Initialized AI-Verse Memory {VERSION} in {mode} mode at {root}")
         elif args.command == "rebuild":
             rebuild(root=root, mode=mode)
+        elif args.command == "search-hooks":
+            if args.list:
+                for mem_id, scope, text in memories_missing_search_hooks(root, mode, args.scope or None):
+                    print(f"{mem_id} ({scope}): {' '.join(text.split())[:500]}")
+            elif args.id and args.add:
+                print(add_search_hooks(args.id, args.add, root, mode))
+                rebuild(silent=True, root=root, mode=mode)
+            else:
+                parser.error("use --list, or give a memory id with --add")
         elif args.command == "doctor":
             return doctor(root, mode)
         elif args.command == "status":
