@@ -124,7 +124,7 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
             root = self._root(tmp)
             write_archive(root, "workspace:alpha", texts=[
                 "do I know which thing", "portable cosmic witness"])
-            result = self._call(root, "detail", "do I know which cosmic")
+            result = self._call(root, "detail", "do I which cosmic")
             chats = [row for row in result["items"]
                      if row["record_type"] == "portable_chat_message"]
             self.assertEqual(len(chats), 1)
