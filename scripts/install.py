@@ -56,6 +56,7 @@ def source_copy(relative: str, destination: Path, source_dir, target_root=None):
         _original_source_copy("scripts/chat_archive_sources.py", destination.parent / "chat_archive_sources.py", source_dir, target_root=target_root)
         _original_source_copy("scripts/relationship_projection.py", destination.parent / "relationship_projection.py", source_dir, target_root=target_root)
         _original_source_copy("scripts/purpose_history.py", destination.parent / "purpose_history.py", source_dir, target_root=target_root)
+        _original_source_copy("scripts/meaning_search.py", destination.parent / "meaning_search.py", source_dir, target_root=target_root)
     elif relative == "scripts/component.py":
         _original_source_copy("scripts/install.py", destination.parent / "install.py", source_dir, target_root=target_root)
         _original_source_copy("scripts/install_engine.py", destination.parent / "install_engine.py", source_dir, target_root=target_root)

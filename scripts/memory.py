@@ -312,7 +312,18 @@ def capture_candidate(
 
 
 
-_meaning = _load_sibling("_aiverse_memory_meaning_search", "meaning_search.py")
+try:
+    _meaning = _load_sibling("_aiverse_memory_meaning_search", "meaning_search.py")
+except (OSError, ImportError, RuntimeError):
+    # An install from before meaning search: recall stays word only.
+    class _NoMeaning:
+        DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
+
+        @staticmethod
+        def blend(conn, db_path, query, word_ranked, *args, **kwargs):
+            return word_ranked
+
+    _meaning = _NoMeaning()
 _promotion = _load_sibling("_aiverse_memory_session_promotion", "session_promotion.py")
 _promotion.apply(_engine, capture_candidate)
 promote_session_digest = _engine.promote_session_digest
