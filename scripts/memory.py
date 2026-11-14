@@ -312,6 +312,7 @@ def capture_candidate(
 
 
 
+_meaning = _load_sibling("_aiverse_memory_meaning_search", "meaning_search.py")
 _promotion = _load_sibling("_aiverse_memory_session_promotion", "session_promotion.py")
 _promotion.apply(_engine, capture_candidate)
 promote_session_digest = _engine.promote_session_digest
@@ -414,8 +415,23 @@ def recall(
         candidates,
         key=lambda row: (row["kind"] != "memory", -_engine.custom_score(row, query, primary_scope)),
     )
+    ranked = ranked[: max(1, min(50, limit))]
+    # Optional meaning search (off unless the member turned it on); falls back to word results.
+    try:
+        meaning_sql = f"""
+            SELECT i.*, s.source_identity, s.source_version, s.freshness, s.indexed_at
+            FROM items i
+            LEFT JOIN source_state s ON s.item_id=i.id
+            WHERE 1=1 {status_clause} {scope_clause}
+            ORDER BY i.updated_at DESC
+            LIMIT 5000
+        """
+        ranked = _meaning.blend(conn, p["db"], query, ranked, meaning_sql, params, limit,
+                                valid=lambda row: _engine._indexed_source_is_valid(row, root, mode))
+    except Exception:
+        pass
     conn.close()
-    return ranked[: max(1, min(50, limit))]
+    return ranked
 
 
 # The engine CLI and any engine function resolving recall at runtime use the
@@ -452,7 +468,42 @@ def mode_report(root: Path) -> None:
 _engine.mode_report = mode_report
 
 
+def meaning_command(argv: List[str]) -> int:
+    """memory.py meaning status|enable|disable [--root PATH] [--model NAME]"""
+    import argparse
+    parser = argparse.ArgumentParser(prog="memory.py meaning")
+    parser.add_argument("action", choices=["status", "enable", "disable"])
+    parser.add_argument("--root")
+    parser.add_argument("--model", default=_meaning.DEFAULT_MODEL)
+    args = parser.parse_args(argv)
+    root = Path(args.root).resolve() if args.root else _engine.repository_root()
+    mode = detect_mode(root)
+    db = _engine.ensure_layout(root, mode)["db"]
+    if args.action == "disable":
+        _meaning.write_config(db, False, args.model)
+        print("Meaning search is off. Recall uses word search only.")
+        return 0
+    if args.action == "enable":
+        if not _meaning.library_available():
+            print("Meaning search needs the fastembed library first. Install it in the Python that runs Memory:")
+            print(f"  {sys.executable} -m pip install fastembed")
+            print("Then run this command again. The model download (about 130 MB) happens on first use.")
+            return 1
+        if _meaning.embedder(args.model, _meaning.model_dir(db)) is None:
+            print("The meaning model could not be loaded. Recall stays word only.")
+            return 1
+        _meaning.write_config(db, True, args.model)
+        print(f"Meaning search is on ({args.model}). It runs on this computer; nothing is sent anywhere.")
+        return 0
+    config = _meaning.read_config(db)
+    state = "on" if config.get("enabled") else "off"
+    print(f"Meaning search: {state} (model {config.get('model', _meaning.DEFAULT_MODEL)}; library {'installed' if _meaning.library_available() else 'not installed'})")
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "meaning":
+        return meaning_command(sys.argv[2:])
     try:
         return _engine.main()
     except RuntimeError as exc:

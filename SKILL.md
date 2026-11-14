@@ -147,3 +147,11 @@ Apply requires an unchanged reviewed source fingerprint and target workspace top
 ## Safety
 
 Honor workspace scope, physical path containment, and the host ownership model. Never use Memory as a second current-context, Skill, or Brain-strategy store.
+
+## Meaning search (optional)
+
+Recall finds memories by shared words. Meaning search also finds them by meaning, for
+example "how much do I charge" finds "my rate is 350 pounds per post". It is off until the
+member turns it on, because it needs the `fastembed` library and a small model download
+(about 65 MB) that stays on this computer. Commands: `python3 scripts/memory.py meaning status`,
+`meaning enable`, `meaning disable`. If the model is missing or fails, recall stays word only.
