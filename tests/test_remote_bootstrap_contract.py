@@ -73,6 +73,7 @@ echo "$URL" >> "$STUBLOG"
 """
 
 
+@unittest.skipIf(sys.platform == "win32", "install.sh stub curl tests need a POSIX shell; Windows uses install.ps1")
 class BootstrapRunTests(unittest.TestCase):
     def run_sh(self, mode, body=""):
         import os, subprocess, tempfile
