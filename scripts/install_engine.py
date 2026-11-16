@@ -17,11 +17,53 @@ from pathlib import Path
 from typing import Optional
 
 VERSION = "0.3.0-beta.2.dev0"
-DEFAULT_SOURCE_REF = os.getenv("AI_VERSE_MEMORY_RELEASE_REF", "main").strip() or "main"
-BASE_URL = os.getenv(
-    "AI_VERSE_MEMORY_BASE_URL",
-    f"https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/{DEFAULT_SOURCE_REF}",
-).rstrip("/")
+REPO_RAW = "https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory"
+# The descriptor that records the accepted release. Its "revision" is the commit
+# a member install must use. The bootstrap scripts read it the same way.
+RELEASE_DESCRIPTOR = "release/component-release.json"
+DESCRIPTOR_REF = "main"
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_RESOLVED_BASE_URL: Optional[str] = None
+
+
+def accepted_revision(descriptor_text: str) -> str:
+    """Return the accepted commit from a component-release descriptor."""
+    data = json.loads(descriptor_text)
+    revision = str(data.get("revision", "")).strip()
+    if data.get("release_status") != "accepted" or not _COMMIT_RE.match(revision):
+        raise RuntimeError("release/component-release.json does not name an accepted commit")
+    return revision
+
+
+def _fail(message: str) -> None:
+    print(f"AI-Verse Memory install error: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def resolve_base_url() -> str:
+    """Developer overrides first, otherwise the accepted release commit."""
+    global _RESOLVED_BASE_URL
+    override = os.getenv("AI_VERSE_MEMORY_BASE_URL", "").strip()
+    if override:
+        return override.rstrip("/")
+    ref = os.getenv("AI_VERSE_MEMORY_RELEASE_REF", "").strip()  # developer only
+    if not ref:
+        if _RESOLVED_BASE_URL is not None:
+            return _RESOLVED_BASE_URL
+        url = f"{REPO_RAW}/{DESCRIPTOR_REF}/{RELEASE_DESCRIPTOR}"
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310 - fixed trusted project URL
+                text = response.read().decode("utf-8")
+        except Exception:
+            _fail("Could not download the release file. Check your internet connection and try again.")
+        try:
+            ref = accepted_revision(text)
+        except Exception:
+            _fail("The release file is not valid or no release is accepted yet. Please try again later or report this.")
+    _RESOLVED_BASE_URL = f"{REPO_RAW}/{ref}"
+    return _RESOLVED_BASE_URL
+
+
 MARKER_START = "<!-- AI-VERSE-MEMORY:START -->"
 MARKER_END = "<!-- AI-VERSE-MEMORY:END -->"
 LOCAL_REGISTRY = Path(".aiverse/extensions/registry.json")
@@ -141,7 +183,7 @@ def source_copy(
             raise FileNotFoundError(f"Installer source missing: {src}")
         shutil.copy2(src, destination)
         return
-    url = f"{BASE_URL}/{relative}"
+    url = f"{resolve_base_url()}/{relative}"
     with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310 - fixed trusted project URL
         destination.write_bytes(response.read())
 

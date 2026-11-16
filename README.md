@@ -274,7 +274,7 @@ The SQLite index remains derived and rebuildable.
 
 CI covers Python 3.9 and 3.12 on Linux, macOS, and Windows. A separate public-beta acceptance gate exercises lifecycle, migration, containment, and idempotency on all three operating systems.
 
-The exact immutable public-beta artifact is recorded under `releases/` after the candidate commit passes acceptance. Bootstrap references are then pinned to that exact commit instead of mutable `main`.
+The accepted release is recorded in `release/component-release.json` after the candidate commit passes acceptance. The one line installers read that file and download the installer scripts, and everything they install, from the exact accepted commit, not from whatever is newest on `main`. There is no checksum; the commit hash is the pin. Developers only: `AI_VERSE_MEMORY_RELEASE_REF` overrides the commit in the bootstrap scripts and the engine, `AI_VERSE_MEMORY_BASE_URL` overrides the source URL in the engine only (the bootstrap scripts ignore it), or install from a local checkout.
 
 ## License
 

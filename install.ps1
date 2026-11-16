@@ -35,9 +35,29 @@ if ($UseLocal) {
 $Temp = Join-Path ([System.IO.Path]::GetTempPath()) ("ai-verse-memory-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $Temp | Out-Null
 try {
-    $Base = "https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory/main/scripts"
+    $RepoRaw = "https://raw.githubusercontent.com/aiverse-filmmakers/AI-Verse-Memory"
+    # Members get the accepted release: the commit recorded in release/component-release.json.
+    # AI_VERSE_MEMORY_RELEASE_REF overrides it (developers only).
+    $Ref = $env:AI_VERSE_MEMORY_RELEASE_REF
+    if (-not $Ref) {
+        try {
+            $Release = Invoke-RestMethod -UseBasicParsing -Uri "$RepoRaw/main/release/component-release.json"
+        } catch {
+            throw "Could not download the release file. Check your internet connection and try again."
+        }
+        if (-not $Release -or $Release -isnot [pscustomobject]) { throw "The release file is not valid. Please try again later or report this." }
+        if ($Release.release_status -cne "accepted") { throw "No accepted release is available yet. Please try again later." }
+        if ($Release.revision -cnotmatch '^[0-9a-f]{40}$') { throw "The release file does not name a valid release. Please report this." }
+        $Ref = $Release.revision
+    }
+    $env:AI_VERSE_MEMORY_RELEASE_REF = $Ref
+    $Base = "$RepoRaw/$Ref/scripts"
     foreach ($File in @("install.py", "install_engine.py", "os_compat.py")) {
-        Invoke-WebRequest -UseBasicParsing -Uri "$Base/$File" -OutFile (Join-Path $Temp $File)
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri "$Base/$File" -OutFile (Join-Path $Temp $File)
+        } catch {
+            throw "Could not download the installer ($File). Check your internet connection and try again."
+        }
     }
     Run-Python @((Join-Path $Temp "install.py"), "--target", $Target)
 } finally {
