@@ -104,9 +104,42 @@ def _atomic_write_json(path: Path, payload: object) -> None:
     _atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def _windows_pid_alive(pid: int) -> bool:
+    # Never signal on Windows: os.kill(pid, 0) there terminates the process.
+    # Ask the OS for the exit code of a read-only process handle instead.
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    ERROR_ACCESS_DENIED = 5
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # Access denied means the process exists but is not ours to inspect.
+        return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+    try:
+        exit_code = wintypes.DWORD(0)
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return False
+        return exit_code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _pid_alive(pid: int) -> bool:
+    # NOTE: identical copy lives in scripts/install_engine.py; the two scripts
+    # are downloaded and loaded one by one, so they cannot share a module.
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        return _windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
