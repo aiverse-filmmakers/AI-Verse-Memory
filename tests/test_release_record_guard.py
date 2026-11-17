@@ -50,11 +50,16 @@ class ReleaseRecordGuardTests(unittest.TestCase):
         self.git("commit", "-q", "-m", msg)
         return self.git("rev-parse", "HEAD")
 
-    def check(self, rec=None, raw=None):
+    def check(self, rec=None, raw=None, strict=True, summary=None):
         (self.repo / "release").mkdir(exist_ok=True)
         path = self.repo / "release" / "component-release.json"
         path.write_text(raw if raw is not None else json.dumps(rec))
-        return subprocess.run([sys.executable, "-I", str(SCRIPT), "--repo", str(self.repo)], capture_output=True, text=True)
+        cmd = [sys.executable, "-I", str(SCRIPT), "--repo", str(self.repo)] + (["--strict"] if strict else [])
+        env = dict(os.environ)
+        env.pop("RELEASE_GUARD_STRICT", None)
+        if summary:
+            env["GITHUB_STEP_SUMMARY"] = str(summary)
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     def test_agreeing_record_passes(self):
         self.write_holders(V)
@@ -106,6 +111,34 @@ class ReleaseRecordGuardTests(unittest.TestCase):
             proc = self.check(raw=raw)
             self.assertEqual(proc.returncode, 1, raw)
             self.assertNotIn("Traceback", proc.stderr)
+
+    def test_default_mode_warns_loudly_and_exits_zero(self):
+        self.write_holders("0.0.1")
+        sha = self.commit()
+        summary = self.repo / "summary.md"
+        proc = self.check(record(sha, run_ci="9", run_acc="9"), strict=False, summary=summary)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("::warning", proc.stdout)
+        self.assertIn("manifest.json says 0.0.1", proc.stdout)
+        text = summary.read_text()
+        self.assertIn("listed twice", text)
+        self.assertIn("scripts/memory_engine.py says 0.0.1", text)
+
+    def test_default_mode_malformed_json_only_warns(self):
+        self.write_holders(V)
+        self.commit()
+        proc = self.check(raw="not json", strict=False)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("::warning", proc.stdout)
+
+    def test_strict_env_var_blocks(self):
+        self.write_holders("0.0.1")
+        sha = self.commit()
+        self.check(record(sha), strict=False)
+        env = dict(os.environ, RELEASE_GUARD_STRICT="1")
+        proc = subprocess.run([sys.executable, "-I", str(SCRIPT), "--repo", str(self.repo)],
+                              capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 1)
 
     def test_far_ahead_only_warns(self):
         self.write_holders(V)

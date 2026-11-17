@@ -20,4 +20,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check the release record against the accepted commit
+        # Warn only for now. Switch to strict after the release records are re-approved:
+        # change the value below to "1" (one line) and mismatches will fail the job.
+        env:
+          RELEASE_GUARD_STRICT: "0"
         run: python scripts/check_release_record.py

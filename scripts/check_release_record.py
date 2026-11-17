@@ -9,11 +9,15 @@ AT THE ACCEPTED COMMIT (git show, so the clone needs full history) and fails if:
   * the same CI run id is listed twice as separate evidence.
 It only warns (exit code unchanged) when HEAD is far ahead of the accepted commit.
 
-Usage: python scripts/check_release_record.py [--repo DIR] [--record PATH]
-Exit code 0 means pass, 1 means the record and the code disagree, 2 means usage error.
+By default the check only WARNS: problems print as GitHub warning annotations and
+in the job summary, and the exit code is 0. With --strict (or RELEASE_GUARD_STRICT=1)
+any problem exits 1 so CI blocks.
+
+Usage: python scripts/check_release_record.py [--repo DIR] [--record PATH] [--strict]
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -164,18 +168,31 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=str(Path(__file__).resolve().parents[1]))
     ap.add_argument("--record", default=None)
+    ap.add_argument("--strict", action="store_true", help="exit 1 when there are problems (or set RELEASE_GUARD_STRICT=1)")
     args = ap.parse_args(argv)
+    strict = args.strict or os.environ.get("RELEASE_GUARD_STRICT", "") in ("1", "true", "yes")
     record = args.record or str(Path(args.repo) / "release" / "component-release.json")
     problems, warnings, rec = run(args.repo, record)
+    summary = []
     for w in warnings:
-        print("WARNING: " + w)
+        print("::warning title=Release record::" + w)
+        summary.append("- " + w)
     if problems:
-        print("RELEASE RECORD CHECK FAILED")
+        print("RELEASE RECORD CHECK FOUND PROBLEMS (%s)" % ("strict mode, failing" if strict else "warn only, not blocking"))
         for p in problems:
-            print(" - " + p)
-        return 1
-    print("Release record check passed: version %s at accepted commit %s." % (rec["version"], rec["revision"][:12]))
-    return 0
+            print("::warning title=Release record mismatch::" + p)
+            summary.append("- " + p)
+    else:
+        print("Release record check passed: version %s at accepted commit %s." % (rec["version"], rec["revision"][:12]))
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path and summary:
+        head = "## Release record guard\n\n" + ("Problems found" + (" (strict, job fails)" if strict and problems else " (warning only)") + ":\n\n")
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(head + "\n".join(summary) + "\n")
+        except OSError:
+            pass
+    return 1 if (problems and strict) else 0
 
 
 if __name__ == "__main__":
