@@ -1,0 +1,23 @@
+name: Release Record Guard
+
+# Fails when the release record and the code it accepts drift apart.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the release record against the accepted commit
+        run: python scripts/check_release_record.py
