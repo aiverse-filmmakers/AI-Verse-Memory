@@ -148,7 +148,7 @@ class ReleaseRecordGuardTests(unittest.TestCase):
             self.commit("c%d" % i)
         proc = self.check(record(sha))
         self.assertEqual(proc.returncode, 0, proc.stdout)
-        self.assertIn("WARNING", proc.stdout)
+        self.assertIn("::warning", proc.stdout)
         self.assertIn("51 commits", proc.stdout)
 
 
