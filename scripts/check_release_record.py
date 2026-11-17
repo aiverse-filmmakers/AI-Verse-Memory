@@ -47,7 +47,8 @@ class GitUnavailable(Exception):
 
 def git(repo, *args):
     try:
-        proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+        proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
     except OSError as exc:
         raise GitUnavailable("git could not be run (%s), so the accepted commit cannot be read." % exc)
     return proc.returncode, proc.stdout, proc.stderr

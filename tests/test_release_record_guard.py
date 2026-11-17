@@ -169,6 +169,17 @@ class ReleaseRecordGuardTests(unittest.TestCase):
             self.assertIn("unexpected error", proc.stdout)
             self.assertNotIn("Traceback", proc.stderr)
 
+    def test_non_utf8_file_does_not_hide_other_findings(self):
+        self.write_holders(V)
+        (self.repo / "SKILL.md").write_bytes(b"---\nversion: " + V.encode() + b"\n---\n\xff\xfe\x80 binary\n")
+        (self.repo / "scripts" / "extra_tool.py").write_text('VERSION = "0.0.7"\n')
+        (self.repo / "scripts" / "binary_tool.py").write_bytes(b"\xff\xfe\x00 VERSION\n")
+        sha = self.commit()
+        proc = self.check(record(sha), strict=False)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("scripts/extra_tool.py says 0.0.7", proc.stdout)
+        self.assertNotIn("unexpected error", proc.stdout)
+
     def test_far_ahead_only_warns(self):
         self.write_holders(V)
         sha = self.commit()
