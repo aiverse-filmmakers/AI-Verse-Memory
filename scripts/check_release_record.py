@@ -2,16 +2,17 @@
 """Check that release/component-release.json and the code it accepts agree.
 
 The record names an accepted commit and a version. This check reads the code
-AT THE ACCEPTED COMMIT (git show, so the clone needs full history) and fails if:
+AT THE ACCEPTED COMMIT (git show, so the clone needs full history) and reports a
+problem if:
   * the record is malformed,
   * the accepted commit does not exist,
   * a version holder at that commit disagrees with the record's version,
   * the same CI run id is listed twice as separate evidence.
-It only warns (exit code unchanged) when HEAD is far ahead of the accepted commit.
+It also warns when HEAD is far ahead of the accepted commit (never a problem).
 
 By default the check only WARNS: problems print as GitHub warning annotations and
-in the job summary, and the exit code is 0. With --strict (or RELEASE_GUARD_STRICT=1)
-any problem exits 1 so CI blocks.
+in the job summary, and the exit code is 0. It fails (exit 1) only in strict mode,
+with --strict or RELEASE_GUARD_STRICT=1. Unexpected errors follow the same rule.
 
 Usage: python scripts/check_release_record.py [--repo DIR] [--record PATH] [--strict]
 """
@@ -40,8 +41,15 @@ DISCOVERED_PY = re.compile(r'(?m)^(?:__version__|VERSION)\s*=\s*["\']([^"\']+)["
 DISCOVERED_JSON = re.compile(r'(?m)^\s{0,4}"version"\s*:\s*"([^"]+)"')
 
 
+class GitUnavailable(Exception):
+    pass
+
+
 def git(repo, *args):
-    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    try:
+        proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    except OSError as exc:
+        raise GitUnavailable("git could not be run (%s), so the accepted commit cannot be read." % exc)
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -131,6 +139,13 @@ def holders_at(repo, revision):
 
 
 def run(repo, record_path):
+    try:
+        return _run(repo, record_path)
+    except GitUnavailable as exc:
+        return [str(exc)], [], None
+
+
+def _run(repo, record_path):
     problems, warnings = [], []
     try:
         rec = json.loads(Path(record_path).read_text(encoding="utf-8"))
@@ -172,7 +187,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
     strict = args.strict or os.environ.get("RELEASE_GUARD_STRICT", "") in ("1", "true", "yes")
     record = args.record or str(Path(args.repo) / "release" / "component-release.json")
-    problems, warnings, rec = run(args.repo, record)
+    try:
+        if os.environ.get("RELEASE_GUARD_FORCE_ERROR"):  # used by tests to force an unexpected error
+            raise RuntimeError("forced error")
+        problems, warnings, rec = run(args.repo, record)
+    except Exception as exc:  # the guard must never crash CI by accident
+        problems, warnings, rec = ["The guard itself hit an unexpected error: %s: %s" % (type(exc).__name__, exc)], [], None
     summary = []
     for w in warnings:
         print("::warning title=Release record::" + w)

@@ -140,6 +140,35 @@ class ReleaseRecordGuardTests(unittest.TestCase):
                               capture_output=True, text=True, env=env)
         self.assertEqual(proc.returncode, 1)
 
+    def run_with_env(self, strict, **extra):
+        self.write_holders(V)
+        sha = self.commit()
+        (self.repo / "release").mkdir(exist_ok=True)
+        (self.repo / "release" / "component-release.json").write_text(json.dumps(record(sha)))
+        env = dict(os.environ, **extra)
+        env.pop("RELEASE_GUARD_STRICT", None)
+        env.update({k: v for k, v in extra.items()})
+        cmd = [sys.executable, "-I", str(SCRIPT), "--repo", str(self.repo)] + (["--strict"] if strict else [])
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    def test_git_missing_is_a_problem_not_a_traceback(self):
+        empty = self.repo / "nobin"
+        empty.mkdir()
+        for strict in (False, True):
+            proc = self.run_with_env(strict, PATH=str(empty))
+            self.assertEqual(proc.returncode, 1 if strict else 0, proc.stdout + proc.stderr)
+            self.assertIn("::warning", proc.stdout)
+            self.assertIn("git could not be run", proc.stdout)
+            self.assertNotIn("Traceback", proc.stderr)
+
+    def test_forced_exception_warns_and_follows_mode(self):
+        for strict in (False, True):
+            proc = self.run_with_env(strict, RELEASE_GUARD_FORCE_ERROR="1")
+            self.assertEqual(proc.returncode, 1 if strict else 0, proc.stdout + proc.stderr)
+            self.assertIn("::warning", proc.stdout)
+            self.assertIn("unexpected error", proc.stdout)
+            self.assertNotIn("Traceback", proc.stderr)
+
     def test_far_ahead_only_warns(self):
         self.write_holders(V)
         sha = self.commit()
