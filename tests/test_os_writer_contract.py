@@ -145,9 +145,9 @@ class PinnedOSWriterMemoryContract(unittest.TestCase):
             shutil.copytree(Path(__file__).resolve().parents[1] / 'scripts', destination,
                             ignore=shutil.ignore_patterns('__pycache__'))
             registry_path = root / '.aiverse/extensions/registry.json'
-            registry = json.loads(registry_path.read_text())
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
             registry['extensions']['ai-verse-memory']['engine'] = 'scripts/ai-verse-memory/memory.py'
-            registry_path.write_text(json.dumps(registry))
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
             spec = importlib.util.spec_from_file_location('_actual_os_placement_host',
                         Path(OS_CHECKOUT) / 'scripts/ai_verse_host_adapter.py')
             host_module = importlib.util.module_from_spec(spec)

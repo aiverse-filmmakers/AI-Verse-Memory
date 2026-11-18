@@ -386,7 +386,7 @@ def _mutation_lock(engine, root: Path, mode: str):
             holder = hashlib.sha256(
                 f"{os.getpid()}:{threading.get_ident()}:{time.monotonic_ns()}".encode("utf-8")
             ).hexdigest()[:20]
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump(
                     {
                         "schema_version": PUBLIC_BETA_SCHEMA,

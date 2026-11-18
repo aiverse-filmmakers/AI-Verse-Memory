@@ -35,15 +35,15 @@ class ReleaseRecordGuardTests(unittest.TestCase):
     def git(self, *args):
         env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
                    GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
-        return subprocess.run(["git", "-C", str(self.repo), *args], env=env, capture_output=True, text=True, check=True).stdout.strip()
+        return subprocess.run(["git", "-C", str(self.repo), *args], env=env, capture_output=True, text=True, check=True, encoding="utf-8", errors="replace").stdout.strip()
 
     def write_holders(self, version):
         (self.repo / "scripts").mkdir(exist_ok=True)
-        (self.repo / "manifest.json").write_text(json.dumps({"name": "m", "version": version}, indent=2) + "\n")
-        (self.repo / "SKILL.md").write_text("---\nname: m\nversion: %s\n---\n" % version)
-        (self.repo / "scripts" / "memory_engine.py").write_text('VERSION = "%s"\n' % version)
-        (self.repo / "scripts" / "install_engine.py").write_text('VERSION = "%s"\n' % version)
-        (self.repo / "README.md").write_text("Current development version: **%s**. Pinned.\n" % version)
+        (self.repo / "manifest.json").write_text(json.dumps({"name": "m", "version": version}, indent=2) + "\n", encoding="utf-8")
+        (self.repo / "SKILL.md").write_text("---\nname: m\nversion: %s\n---\n" % version, encoding="utf-8")
+        (self.repo / "scripts" / "memory_engine.py").write_text('VERSION = "%s"\n' % version, encoding="utf-8")
+        (self.repo / "scripts" / "install_engine.py").write_text('VERSION = "%s"\n' % version, encoding="utf-8")
+        (self.repo / "README.md").write_text("Current development version: **%s**. Pinned.\n" % version, encoding="utf-8")
 
     def commit(self, msg="c"):
         self.git("add", "-A")
@@ -53,13 +53,13 @@ class ReleaseRecordGuardTests(unittest.TestCase):
     def check(self, rec=None, raw=None, strict=True, summary=None):
         (self.repo / "release").mkdir(exist_ok=True)
         path = self.repo / "release" / "component-release.json"
-        path.write_text(raw if raw is not None else json.dumps(rec))
+        path.write_text(raw if raw is not None else json.dumps(rec), encoding="utf-8")
         cmd = [sys.executable, "-I", str(SCRIPT), "--repo", str(self.repo)] + (["--strict"] if strict else [])
         env = dict(os.environ)
         env.pop("RELEASE_GUARD_STRICT", None)
         if summary:
             env["GITHUB_STEP_SUMMARY"] = str(summary)
-        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+        return subprocess.run(cmd, capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
 
     def test_agreeing_record_passes(self):
         self.write_holders(V)
@@ -76,7 +76,7 @@ class ReleaseRecordGuardTests(unittest.TestCase):
 
     def test_holder_disagreeing_at_accepted_commit_fails(self):
         self.write_holders(V)
-        (self.repo / "scripts" / "install_engine.py").write_text('VERSION = "0.0.1"\n')
+        (self.repo / "scripts" / "install_engine.py").write_text('VERSION = "0.0.1"\n', encoding="utf-8")
         sha = self.commit()
         proc = self.check(record(sha))
         self.assertEqual(proc.returncode, 1)
@@ -120,7 +120,7 @@ class ReleaseRecordGuardTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertIn("::warning", proc.stdout)
         self.assertIn("manifest.json says 0.0.1", proc.stdout)
-        text = summary.read_text()
+        text = summary.read_text(encoding="utf-8")
         self.assertIn("listed twice", text)
         self.assertIn("scripts/memory_engine.py says 0.0.1", text)
 
@@ -137,19 +137,19 @@ class ReleaseRecordGuardTests(unittest.TestCase):
         self.check(record(sha), strict=False)
         env = dict(os.environ, RELEASE_GUARD_STRICT="1")
         proc = subprocess.run([sys.executable, "-I", str(SCRIPT), "--repo", str(self.repo)],
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
         self.assertEqual(proc.returncode, 1)
 
     def run_with_env(self, strict, **extra):
         self.write_holders(V)
         sha = self.commit()
         (self.repo / "release").mkdir(exist_ok=True)
-        (self.repo / "release" / "component-release.json").write_text(json.dumps(record(sha)))
+        (self.repo / "release" / "component-release.json").write_text(json.dumps(record(sha)), encoding="utf-8")
         env = dict(os.environ, **extra)
         env.pop("RELEASE_GUARD_STRICT", None)
         env.update({k: v for k, v in extra.items()})
         cmd = [sys.executable, "-I", str(SCRIPT), "--repo", str(self.repo)] + (["--strict"] if strict else [])
-        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+        return subprocess.run(cmd, capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
 
     def test_git_missing_is_a_problem_not_a_traceback(self):
         empty = self.repo / "nobin"
@@ -172,7 +172,7 @@ class ReleaseRecordGuardTests(unittest.TestCase):
     def test_non_utf8_file_does_not_hide_other_findings(self):
         self.write_holders(V)
         (self.repo / "SKILL.md").write_bytes(b"---\nversion: " + V.encode() + b"\n---\n\xff\xfe\x80 binary\n")
-        (self.repo / "scripts" / "extra_tool.py").write_text('VERSION = "0.0.7"\n')
+        (self.repo / "scripts" / "extra_tool.py").write_text('VERSION = "0.0.7"\n', encoding="utf-8")
         (self.repo / "scripts" / "binary_tool.py").write_bytes(b"\xff\xfe\x00 VERSION\n")
         sha = self.commit()
         proc = self.check(record(sha), strict=False)
@@ -184,7 +184,7 @@ class ReleaseRecordGuardTests(unittest.TestCase):
         self.write_holders(V)
         sha = self.commit()
         for i in range(51):
-            (self.repo / "f.txt").write_text(str(i))
+            (self.repo / "f.txt").write_text(str(i), encoding="utf-8")
             self.commit("c%d" % i)
         proc = self.check(record(sha))
         self.assertEqual(proc.returncode, 0, proc.stdout)

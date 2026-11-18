@@ -21,7 +21,7 @@ class ComponentLifecycleAcceptanceTests(unittest.TestCase):
                 ["cmd", "/c", "mklink", "/J", str(link), str(destination)],
                 check=True,
                 capture_output=True,
-                text=True,
+                text=True,encoding="utf-8", errors="replace"
             )
         else:
             link.symlink_to(destination, target_is_directory=True)
@@ -371,7 +371,7 @@ class ComponentLifecycleAcceptanceTests(unittest.TestCase):
                 ],
                 check=True,
                 text=True,
-                capture_output=True,
+                capture_output=True,encoding="utf-8", errors="replace"
             )
             status = json.loads(status_run.stdout)
             self.assertEqual(status["component"], "ai-verse-memory")
@@ -392,7 +392,7 @@ class ComponentLifecycleAcceptanceTests(unittest.TestCase):
                 ],
                 check=True,
                 text=True,
-                capture_output=True,
+                capture_output=True,encoding="utf-8", errors="replace"
             )
             doctor = json.loads(doctor_run.stdout)
             self.assertEqual(doctor["doctor"], "PASS")

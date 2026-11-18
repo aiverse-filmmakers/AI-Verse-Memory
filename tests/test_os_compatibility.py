@@ -135,7 +135,7 @@ class IncompatibleHostNoWriteTests(unittest.TestCase):
             ],
             text=True,
             capture_output=True,
-            check=False,
+            check=False,encoding="utf-8", errors="replace"
         )
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("install blocked", result.stderr)
@@ -148,7 +148,7 @@ class IncompatibleHostNoWriteTests(unittest.TestCase):
             [sys.executable, str(ROOT / "scripts" / "memory.py"), "--root", str(root), "init"],
             text=True,
             capture_output=True,
-            check=False,
+            check=False,encoding="utf-8", errors="replace"
         )
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("Incompatible AI-Verse OS", result.stderr)
@@ -175,7 +175,7 @@ class IncompatibleHostNoWriteTests(unittest.TestCase):
             [sys.executable, str(ROOT / "scripts" / "install.py"), "--target", str(root), "--source-dir", str(ROOT)],
             text=True,
             capture_output=True,
-            check=False,
+            check=False,encoding="utf-8", errors="replace"
         )
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertEqual(snapshot(root), before)
