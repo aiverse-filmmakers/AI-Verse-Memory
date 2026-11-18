@@ -211,7 +211,7 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
             self.assertNotIn("beta private", json.dumps(view).lower())
             self.assertEqual(self._source(root, alpha)["status"], "ok")
             (root / "workspaces/alpha/WORKSPACE.yaml").write_text(
-                'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n')
+                'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n', encoding="utf-8")
             with self.assertRaises(ValueError):
                 self._source(root, alpha)
 
@@ -391,7 +391,7 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
 
             def revoke_while_reading(os_root, candidate):
                 manifest.write_text(
-                    'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n'
+                    'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n', encoding="utf-8"
                 )
                 raise FileNotFoundError("file vanished under revoked permission")
 
@@ -431,7 +431,7 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
                     data = read(os_root, candidate)
                     if candidate.name == operator.name:
                         manifest.write_text(
-                            'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n'
+                            'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n', encoding="utf-8"
                         )
                     return data
 
@@ -471,7 +471,7 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
                         result = original(*args, **kwargs)
                         called.append(True)
                         manifest.write_text(
-                            'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n'
+                            'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n', encoding="utf-8"
                         )
                         return result
 
@@ -500,7 +500,7 @@ class ChatArchiveProgressiveTests(unittest.TestCase):
             def revoke_after_fit(*args, **kwargs):
                 response = original_fit(*args, **kwargs)
                 manifest.write_text(
-                    'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n'
+                    'schema_version: "2.0"\nid: "alpha"\nstatus: paused\n', encoding="utf-8"
                 )
                 return response
 

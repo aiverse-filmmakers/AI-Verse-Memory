@@ -81,18 +81,18 @@ class BootstrapRunTests(unittest.TestCase):
             d = Path(d)
             (d / "bin").mkdir()
             stub = d / "bin" / "curl"
-            stub.write_text(STUB)
+            stub.write_text(STUB, encoding="utf-8")
             stub.chmod(0o755)
             target = d / "target"
             target.mkdir()
             script = d / "install.sh"  # not in a checkout, so it takes the remote path
-            script.write_text((ROOT / "install.sh").read_text(encoding="utf-8"))
+            script.write_text((ROOT / "install.sh").read_text(encoding="utf-8"), encoding="utf-8")
             env = dict(os.environ, PATH=f"{d / 'bin'}:{os.environ['PATH']}", MODE=mode, BODY=body,
                        STUBLOG=str(d / "log"), AI_VERSE_MEMORY_TARGET=str(target), TMPDIR=str(d))
             env.pop("AI_VERSE_MEMORY_RELEASE_REF", None)
-            proc = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+            proc = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
             installed = [p.name for p in target.iterdir()]
-            log = (d / "log").read_text() if (d / "log").exists() else ""
+            log = (d / "log").read_text(encoding="utf-8") if (d / "log").exists() else ""
             return proc, installed, log
 
     def assert_refused(self, mode, body, message):

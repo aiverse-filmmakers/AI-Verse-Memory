@@ -11,6 +11,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -1084,8 +1085,14 @@ def write_atomic(
     return mem_id, path, True
 
 
+def fold_text(value: str) -> str:
+    """Casefold and strip combining marks, for matching only (stored text is never changed)."""
+    decomposed = unicodedata.normalize("NFKD", (value or "").casefold())
+    return unicodedata.normalize("NFC", "".join(c for c in decomposed if unicodedata.category(c) != "Mn"))
+
+
 def tokenize(value: str) -> List[str]:
-    return [t.lower() for t in re.findall(r"[A-Za-z0-9_\-]{2,}", value)]
+    return re.findall(r"[\w\-]{2,}", fold_text(value))
 
 
 _QUERY_STOPWORDS = frozenset(
@@ -1168,7 +1175,7 @@ def row_matches_query(row: sqlite3.Row, query: str) -> bool:
         return False
     hay = row_haystack(row)
     words = set(tokenize(hay))
-    return bool(terms & words) or query.strip().lower() in hay
+    return bool(terms & words) or fold_text(query.strip()) in fold_text(hay)
 
 
 def allowed_scopes(
@@ -1205,7 +1212,7 @@ def custom_score(row: sqlite3.Row, query: str, primary_scope: Optional[str]) -> 
     score = overlap * 2.0
     if row["kind"] == "memory":
         score += 2.0
-    if query.strip().lower() in hay:
+    if fold_text(query.strip()) in fold_text(hay):
         score += 4.0
     if primary_scope:
         if row["scope"] == primary_scope:

@@ -188,6 +188,12 @@ def source_copy(
         destination.write_bytes(response.read())
 
 
+def _write_text_lf(path: Path, text: str) -> None:
+    """Write UTF-8 text with LF line endings on every platform, so later hashes match."""
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
 def replace_marker_block(path: Path, block: Optional[str], target_root: Optional[Path] = None) -> None:
     if target_root is not None:
         path = assert_safe_lifecycle_path(target_root, path)
@@ -202,7 +208,7 @@ def replace_marker_block(path: Path, block: Optional[str], target_root: Optional
     path.parent.mkdir(parents=True, exist_ok=True)
     if target_root is not None:
         path = assert_safe_lifecycle_path(target_root, path)
-    path.write_text(text, encoding="utf-8")
+    _write_text_lf(path, text)
 
 
 def ensure_gitignore(target: Path, entry: str, comment: str) -> None:
@@ -212,7 +218,7 @@ def ensure_gitignore(target: Path, entry: str, comment: str) -> None:
     if entry in lines:
         return
     addition = f"\n# {comment}\n{entry}\n"
-    path.write_text(text.rstrip() + addition, encoding="utf-8")
+    _write_text_lf(path, text.rstrip() + addition)
 
 
 def _ensure_extension_dir(target: Path) -> Path:
@@ -311,7 +317,7 @@ def _registry_lock(target: Path):
         except OSError as exc:
             raise RuntimeError(f"Could not acquire local extension registry lock: {exc}") from exc
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump({"extension_id": "ai-verse-memory", "pid": os.getpid()}, handle)
             handle.write("\n")
             handle.flush()
@@ -360,7 +366,7 @@ def _write_registry_atomic(target: Path, payload: dict, expected_raw: Optional[s
             os.chmod(temp_name, 0o600)
         except OSError:
             pass
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
             handle.write("\n")
             handle.flush()
@@ -446,7 +452,7 @@ def _migrate_exact_legacy_marker(path: Path, label: str, target_root: Optional[P
     expected_suffix = "\n\n" + NATIVE_BLOCK + "\n"
     if text.endswith(expected_suffix):
         restored = text[: -len(expected_suffix)] + "\n"
-        path.write_text(restored, encoding="utf-8")
+        _write_text_lf(path, restored)
         return f"{label}: migrated exact legacy Memory marker"
 
     pattern = re.compile(re.escape(MARKER_START) + r".*?" + re.escape(MARKER_END), re.S)
@@ -466,7 +472,7 @@ def _migrate_exact_legacy_registry(target: Path) -> str:
 
     exact = LEGACY_REGISTRY_BLOCK + "\n"
     if exact in text:
-        registry.write_text(text.replace(exact, "", 1), encoding="utf-8")
+        _write_text_lf(registry, text.replace(exact, "", 1))
         return "skills/registry.yaml: migrated exact legacy Memory entry"
     return "warning: skills/registry.yaml contains a modified or ambiguous ai-verse-memory entry; left unchanged"
 
@@ -513,6 +519,8 @@ def run_engine(engine: Path, target: Path, command: str) -> None:
         [sys.executable, str(engine), "--root", str(target), command],
         check=False,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"Memory engine command failed: {command} (exit {result.returncode})")
