@@ -1,0 +1,29 @@
+name: Release Record Guard
+
+# Warns when the release record and the code it accepts drift apart. Fails only in strict mode.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the release record against the accepted commit
+        # Warn only for now. Switch to strict after the release records are re-approved:
+        # change the value below to "1" (one line) and mismatches will fail the job.
+        # Also remove continue-on-error below when switching to strict, or the job still stays green.
+        continue-on-error: true
+        env:
+          RELEASE_GUARD_STRICT: "0"
+        run: python scripts/check_release_record.py
