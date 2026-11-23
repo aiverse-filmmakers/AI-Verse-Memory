@@ -32,6 +32,8 @@ LOCK_WAIT_SECONDS = 120
 # The clearing guard is only held for a few milliseconds. One that is older than
 # this and whose owner is gone was left behind by a crash.
 LOCK_GUARD_STALE_SECONDS = 30
+LOCK_UNLINK_ATTEMPTS = 5
+LOCK_UNLINK_PAUSE_SECONDS = 0.05
 _LOCK_LOCAL = threading.local()
 _LOCK_PROCESS_GUARD = threading.Lock()
 _LOCK_PROCESS_LOCKS: Dict[str, threading.Lock] = {}
@@ -370,10 +372,18 @@ def _release_lock_file(path: Path, token: str) -> None:
     """
     if _read_lock_payload(path).get("token") != token:
         return
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+    # This runs in finally blocks. On Windows a file that another program has
+    # open cannot be deleted for a moment, so retry briefly and then give up
+    # quietly: a failure here must never hide the real error.
+    for attempt in range(LOCK_UNLINK_ATTEMPTS):
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt + 1 < LOCK_UNLINK_ATTEMPTS:
+                time.sleep(LOCK_UNLINK_PAUSE_SECONDS)
 
 
 def _guard_is_stale(guard: Path) -> bool:
@@ -444,12 +454,16 @@ def _clear_stale_lock(lock: Path, observed) -> str:
             return "gone"
         if current != observed or not _lock_is_stale(lock):
             return "fresh"
-        try:
-            lock.unlink()
-        except FileNotFoundError:
-            return "gone"
-        except OSError as exc:
-            raise RuntimeError(f"Could not clear stale Memory mutation lock: {lock}: {exc}") from exc
+        for attempt in range(LOCK_UNLINK_ATTEMPTS):
+            try:
+                lock.unlink()
+                return "cleared"
+            except FileNotFoundError:
+                return "gone"
+            except OSError as exc:
+                if attempt + 1 >= LOCK_UNLINK_ATTEMPTS:
+                    raise RuntimeError(f"Could not clear stale Memory mutation lock: {lock}: {exc}") from exc
+                time.sleep(LOCK_UNLINK_PAUSE_SECONDS)
         return "cleared"
     finally:
         _release_lock_file(guard, guard_token)

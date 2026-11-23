@@ -216,7 +216,7 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     finally:
         try:
             Path(temp_name).unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
 
 
@@ -230,7 +230,7 @@ def _atomic_copy(src: Path, destination: Path) -> None:
     finally:
         try:
             Path(temp_name).unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
 
 
@@ -330,6 +330,8 @@ def _pid_alive(pid: int) -> bool:
 
 REGISTRY_LOCK_STALE_SECONDS = 600
 REGISTRY_GUARD_STALE_SECONDS = 30
+REGISTRY_UNLINK_ATTEMPTS = 5
+REGISTRY_UNLINK_PAUSE_SECONDS = 0.05
 # How long to wait for another installer that is clearing a stale lock.
 REGISTRY_CLEAR_WAIT_SECONDS = 10
 
@@ -374,10 +376,18 @@ def _release_token_file(path: Path, token: str) -> None:
     """Remove a lock or guard file, but only if it still carries our token."""
     if _read_json_object(path).get("token") != token:
         return
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+    # Runs in finally blocks. On Windows a file another program has open cannot
+    # be deleted for a moment: retry briefly, then give up quietly so the real
+    # error is never hidden.
+    for attempt in range(REGISTRY_UNLINK_ATTEMPTS):
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt + 1 < REGISTRY_UNLINK_ATTEMPTS:
+                time.sleep(REGISTRY_UNLINK_PAUSE_SECONDS)
 
 
 def _try_take_registry_guard(guard: Path):
@@ -437,12 +447,16 @@ def _clear_stale_registry_lock(lock: Path, observed) -> str:
             return "gone"
         if current != observed or not _registry_lock_is_stale(lock):
             return "fresh"
-        try:
-            lock.unlink()
-        except FileNotFoundError:
-            return "gone"
-        except OSError as exc:
-            raise RuntimeError(f"Could not clear stale local extension registry lock: {lock}: {exc}") from exc
+        for attempt in range(REGISTRY_UNLINK_ATTEMPTS):
+            try:
+                lock.unlink()
+                return "cleared"
+            except FileNotFoundError:
+                return "gone"
+            except OSError as exc:
+                if attempt + 1 >= REGISTRY_UNLINK_ATTEMPTS:
+                    raise RuntimeError(f"Could not clear stale local extension registry lock: {lock}: {exc}") from exc
+                time.sleep(REGISTRY_UNLINK_PAUSE_SECONDS)
         return "cleared"
     finally:
         _release_token_file(guard, guard_token)
@@ -535,7 +549,7 @@ def _write_registry_atomic(target: Path, payload: dict, expected_raw: Optional[s
     finally:
         try:
             Path(temp_name).unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
 
 

@@ -27,14 +27,22 @@ def safe_write_text(path: Path, text: str) -> None:
 
     The text goes to a temporary file in the same folder, is flushed to disk,
     and then replaces the target in one step. A reader sees either the old file
-    or the new one, never a mix.
+    or the new one, never a mix. An existing file keeps its permission bits (a
+    brand new file gets owner only access). If the path is a symlink, the real
+    file it points to is replaced and the link stays in place.
     """
     path = Path(path)
+    if path.is_symlink():
+        path = Path(os.path.realpath(str(path)))
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        mode = 0o600
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
         try:
-            os.chmod(temp_name, 0o600)
+            os.chmod(temp_name, mode)
         except OSError:
             pass
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
@@ -45,8 +53,9 @@ def safe_write_text(path: Path, text: str) -> None:
     finally:
         try:
             Path(temp_name).unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
+
 
 MEMORY_TYPES = {
     "fact",

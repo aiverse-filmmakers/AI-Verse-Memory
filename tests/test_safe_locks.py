@@ -60,6 +60,22 @@ def write_lock(path, pid, token="legacy", age_seconds=0):
         os.utime(path, (when, when))
 
 
+def flaky_unlink(target, failures):
+    """Path.unlink replacement that fails with PermissionError a set number of times for one file."""
+    real_unlink = Path.unlink
+    state = {"left": failures, "calls": 0}
+
+    def unlink(path, *args, **kwargs):
+        if Path(path) == target:
+            state["calls"] += 1
+            if state["left"] > 0:
+                state["left"] -= 1
+                raise PermissionError("file in use")
+        return real_unlink(path, *args, **kwargs)
+
+    return unlink, state
+
+
 class MutationLockTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -168,6 +184,34 @@ class MutationLockTests(unittest.TestCase):
         self.assertIn("Could not clear stale", str(caught.exception))
         self.assertLess(time.monotonic() - started, 5.0)
         self.assertFalse(self.guard.exists())
+
+    def test_release_retries_when_the_file_is_briefly_in_use(self):
+        unlink, state = flaky_unlink(self.lock, 2)
+        with mock.patch.object(PB, "LOCK_UNLINK_PAUSE_SECONDS", 0.001):
+            with mock.patch.object(Path, "unlink", unlink):
+                with mem.public_beta_mutation_lock(self.root, mem.MODE_STANDALONE):
+                    pass
+        self.assertFalse(self.lock.exists())
+        self.assertEqual(state["calls"], 3)
+
+    def test_release_failure_never_masks_the_real_error(self):
+        unlink, _ = flaky_unlink(self.lock, 1000)
+        with mock.patch.object(PB, "LOCK_UNLINK_PAUSE_SECONDS", 0.001):
+            with mock.patch.object(Path, "unlink", unlink):
+                with self.assertRaises(ValueError):
+                    with mem.public_beta_mutation_lock(self.root, mem.MODE_STANDALONE):
+                        raise ValueError("the real error")
+        self.assertTrue(self.lock.exists())
+
+    def test_clearing_retries_a_busy_stale_lock_before_giving_up(self):
+        write_lock(self.lock, DEAD_PID, age_seconds=3600)
+        observed = PB._lock_identity(self.lock)
+        unlink, state = flaky_unlink(self.lock, 2)
+        with mock.patch.object(PB, "LOCK_UNLINK_PAUSE_SECONDS", 0.001):
+            with mock.patch.object(Path, "unlink", unlink):
+                self.assertEqual(PB._clear_stale_lock(self.lock, observed), "cleared")
+        self.assertEqual(state["calls"], 3)
+        self.assertFalse(self.lock.exists())
 
     def test_live_holder_is_waited_for_not_cleared(self):
         write_lock(self.lock, os.getpid(), token="live", age_seconds=3600)
@@ -302,6 +346,29 @@ class RegistryLockTests(unittest.TestCase):
         write_lock(self.guard, DEAD_PID, token="crashed", age_seconds=install.REGISTRY_GUARD_STALE_SECONDS + 5)
         self.assertEqual(install._clear_stale_registry_lock(self.lock, observed), "cleared")
         self.assertFalse(self.guard.exists())
+
+    def test_release_retries_and_never_masks_the_real_error(self):
+        unlink, state = flaky_unlink(self.lock, 2)
+        with mock.patch.object(install, "REGISTRY_UNLINK_PAUSE_SECONDS", 0.001):
+            with mock.patch.object(Path, "unlink", unlink):
+                with install._registry_lock(self.target):
+                    pass
+        self.assertFalse(self.lock.exists())
+        unlink, _ = flaky_unlink(self.lock, 1000)
+        with mock.patch.object(install, "REGISTRY_UNLINK_PAUSE_SECONDS", 0.001):
+            with mock.patch.object(Path, "unlink", unlink):
+                with self.assertRaises(ValueError):
+                    with install._registry_lock(self.target):
+                        raise ValueError("the real error")
+
+    def test_clearing_retries_a_busy_stale_lock(self):
+        write_lock(self.lock, DEAD_PID, age_seconds=3600)
+        observed = install._file_identity(self.lock)
+        unlink, state = flaky_unlink(self.lock, 2)
+        with mock.patch.object(install, "REGISTRY_UNLINK_PAUSE_SECONDS", 0.001):
+            with mock.patch.object(Path, "unlink", unlink):
+                self.assertEqual(install._clear_stale_registry_lock(self.lock, observed), "cleared")
+        self.assertEqual(state["calls"], 3)
 
     def test_unremovable_stale_lock_fails_with_plain_error(self):
         write_lock(self.lock, DEAD_PID, age_seconds=3600)

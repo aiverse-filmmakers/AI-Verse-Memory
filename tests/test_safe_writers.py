@@ -50,6 +50,34 @@ class EngineSafeWriterTests(unittest.TestCase):
             ENGINE.safe_write_text(target, "café\nline two\n")
             self.assertEqual(target.read_bytes(), "café\nline two\n".encode("utf-8"))
 
+    @unittest.skipIf(os.name == "nt", "permission bits are not meaningful on Windows")
+    def test_existing_file_keeps_its_mode_and_new_file_is_owner_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            existing = Path(tmp) / "existing.md"
+            existing.write_text("old\n", encoding="utf-8")
+            os.chmod(existing, 0o644)
+            ENGINE.safe_write_text(existing, "new\n")
+            self.assertEqual(existing.stat().st_mode & 0o777, 0o644)
+            fresh = Path(tmp) / "fresh.md"
+            ENGINE.safe_write_text(fresh, "new\n")
+            self.assertEqual(fresh.stat().st_mode & 0o777, 0o600)
+
+    def test_symlinked_target_keeps_the_link_and_replaces_the_real_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real_dir = Path(tmp) / "real"
+            real_dir.mkdir()
+            real = real_dir / "memory.md"
+            real.write_text("old\n", encoding="utf-8")
+            link = Path(tmp) / "link.md"
+            try:
+                link.symlink_to(real)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlinks unavailable: {exc}")
+            ENGINE.safe_write_text(link, "new\n")
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(real.read_text(encoding="utf-8"), "new\n")
+            self.assertEqual(sorted(p.name for p in real_dir.iterdir()), ["memory.md"])
+
     def test_engine_has_no_plain_write_text_left(self):
         source = (SCRIPTS / "memory_engine.py").read_text(encoding="utf-8")
         self.assertNotIn(".write_text(", source)
