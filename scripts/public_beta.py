@@ -364,26 +364,52 @@ def _lock_identity(lock: Path):
     )
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _busy_error(exc: BaseException) -> bool:
+    """True if this error only means "another program has the file right now".
+
+    On Windows, creating, opening, reading or deleting a file that another
+    process has open or is deleting raises PermissionError (or an OSError with
+    winerror 5, 32 or 33) instead of FileExistsError or FileNotFoundError.
+    Elsewhere a PermissionError is a real problem and is never treated as busy.
+    """
+    if not _is_windows():
+        return False
+    return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in (5, 32, 33)
+
+
 def _release_lock_file(path: Path, token: str) -> None:
     """Remove a lock or guard file, but only if it still carries our token.
 
     A file with someone else's token (or no readable token) is never ours to
-    delete.
+    delete. This runs in finally blocks: a busy file is retried briefly and then
+    given up with a one line warning, and a failure here must never hide the
+    real error.
     """
-    if _read_lock_payload(path).get("token") != token:
-        return
-    # This runs in finally blocks. On Windows a file that another program has
-    # open cannot be deleted for a moment, so retry briefly and then give up
-    # quietly: a failure here must never hide the real error.
     for attempt in range(LOCK_UNLINK_ATTEMPTS):
         try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("token") != token:
+                return
             path.unlink()
             return
         except FileNotFoundError:
             return
+        except ValueError:
+            return
         except OSError:
             if attempt + 1 < LOCK_UNLINK_ATTEMPTS:
                 time.sleep(LOCK_UNLINK_PAUSE_SECONDS)
+    try:
+        print(
+            f"warning: could not remove the Memory lock file {path}; it will be cleared later as stale.",
+            file=sys.stderr,
+        )
+    except Exception:  # noqa: BLE001 - a warning must never raise
+        pass
 
 
 def _guard_is_stale(guard: Path) -> bool:
@@ -415,8 +441,16 @@ def _try_take_guard(guard: Path):
                     guard.unlink()
                 except FileNotFoundError:
                     pass
+                except OSError as exc:
+                    if _busy_error(exc):
+                        return None
+                    raise
                 continue
             return None
+        except OSError as exc:
+            if _busy_error(exc):
+                return None
+            raise
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump({"pid": os.getpid(), "token": token, "created_at": _now_iso()}, handle)
@@ -462,6 +496,10 @@ def _clear_stale_lock(lock: Path, observed) -> str:
                 return "gone"
             except OSError as exc:
                 if attempt + 1 >= LOCK_UNLINK_ATTEMPTS:
+                    if _busy_error(exc):
+                        # Another program still has it open. The caller waits
+                        # and tries again within its deadline.
+                        return "busy"
                     raise RuntimeError(f"Could not clear stale Memory mutation lock: {lock}: {exc}") from exc
                 time.sleep(LOCK_UNLINK_PAUSE_SECONDS)
         return "cleared"
@@ -514,6 +552,13 @@ def _mutation_lock(engine, root: Path, mode: str):
                     raise RuntimeError(f"Timed out waiting for AI-Verse Memory canonical mutation lock: {lock}") from exc
                 time.sleep(0.05)
             except OSError as exc:
+                if _busy_error(exc):
+                    # Windows: the lock file is open or being deleted by
+                    # another process. Same as busy, wait inside the deadline.
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(f"Timed out waiting for AI-Verse Memory canonical mutation lock: {lock}") from exc
+                    time.sleep(0.05)
+                    continue
                 raise RuntimeError(f"Could not acquire Memory mutation lock: {exc}") from exc
 
         token = uuid.uuid4().hex
@@ -535,7 +580,7 @@ def _mutation_lock(engine, root: Path, mode: str):
             # The file was created by us a moment ago and carries no token yet.
             try:
                 lock.unlink()
-            except FileNotFoundError:
+            except OSError:
                 pass
             raise
         try:

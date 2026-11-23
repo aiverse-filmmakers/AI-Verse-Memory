@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -74,6 +76,22 @@ def flaky_unlink(target, failures):
         return real_unlink(path, *args, **kwargs)
 
     return unlink, state
+
+
+def flaky_open(module, target, failures, error=None):
+    """os.open replacement that fails with a Windows style PermissionError a set number of times for one file."""
+    real_open = os.open
+    state = {"left": failures, "calls": 0}
+
+    def opener(path, *args, **kwargs):
+        if Path(path) == target:
+            state["calls"] += 1
+            if state["left"] > 0:
+                state["left"] -= 1
+                raise (error or PermissionError(13, "Permission denied"))
+        return real_open(path, *args, **kwargs)
+
+    return opener, state
 
 
 class MutationLockTests(unittest.TestCase):
@@ -196,7 +214,7 @@ class MutationLockTests(unittest.TestCase):
 
     def test_release_failure_never_masks_the_real_error(self):
         unlink, _ = flaky_unlink(self.lock, 1000)
-        with mock.patch.object(PB, "LOCK_UNLINK_PAUSE_SECONDS", 0.001):
+        with mock.patch.object(PB, "LOCK_UNLINK_PAUSE_SECONDS", 0.001), contextlib.redirect_stderr(io.StringIO()):
             with mock.patch.object(Path, "unlink", unlink):
                 with self.assertRaises(ValueError):
                     with mem.public_beta_mutation_lock(self.root, mem.MODE_STANDALONE):
@@ -211,6 +229,93 @@ class MutationLockTests(unittest.TestCase):
             with mock.patch.object(Path, "unlink", unlink):
                 self.assertEqual(PB._clear_stale_lock(self.lock, observed), "cleared")
         self.assertEqual(state["calls"], 3)
+        self.assertFalse(self.lock.exists())
+
+    def test_windows_busy_error_on_create_waits_and_retries(self):
+        opener, state = flaky_open(PB, self.lock, 3)
+        with mock.patch.object(PB, "_is_windows", lambda: True):
+            with mock.patch.object(PB.os, "open", opener):
+                with mem.public_beta_mutation_lock(self.root, mem.MODE_STANDALONE):
+                    self.assertTrue(self.lock.exists())
+        self.assertEqual(state["calls"], 4)
+        self.assertFalse(self.lock.exists())
+
+    def test_windows_winerror_codes_count_as_busy(self):
+        for code in (5, 32, 33):
+            with self.subTest(winerror=code):
+                error = OSError(13, "busy")
+                error.winerror = code
+                opener, state = flaky_open(PB, self.lock, 2, error)
+                with mock.patch.object(PB, "_is_windows", lambda: True):
+                    with mock.patch.object(PB.os, "open", opener):
+                        with mem.public_beta_mutation_lock(self.root, mem.MODE_STANDALONE):
+                            pass
+                self.assertEqual(state["calls"], 3)
+
+    def test_windows_busy_error_only_raises_at_the_deadline(self):
+        opener, _ = flaky_open(PB, self.lock, 10 ** 6)
+        with mock.patch.object(PB, "_is_windows", lambda: True), \
+                mock.patch.object(PB, "LOCK_WAIT_SECONDS", 0.3), \
+                mock.patch.object(PB.os, "open", opener):
+            with self.assertRaises(RuntimeError) as caught:
+                with mem.public_beta_mutation_lock(self.root, mem.MODE_STANDALONE):
+                    pass
+        self.assertIn("Timed out", str(caught.exception))
+
+    def test_permission_error_is_still_a_hard_error_off_windows(self):
+        opener, state = flaky_open(PB, self.lock, 10 ** 6)
+        with mock.patch.object(PB, "_is_windows", lambda: False), mock.patch.object(PB.os, "open", opener):
+            with self.assertRaises(RuntimeError) as caught:
+                with mem.public_beta_mutation_lock(self.root, mem.MODE_STANDALONE):
+                    pass
+        self.assertIn("Could not acquire", str(caught.exception))
+        self.assertEqual(state["calls"], 1)
+
+    def test_windows_busy_guard_means_another_waiter_is_clearing(self):
+        write_lock(self.lock, DEAD_PID, age_seconds=3600)
+        observed = PB._lock_identity(self.lock)
+        opener, _ = flaky_open(PB, self.guard, 1)
+        with mock.patch.object(PB, "_is_windows", lambda: True), mock.patch.object(PB.os, "open", opener):
+            self.assertEqual(PB._clear_stale_lock(self.lock, observed), "busy")
+        self.assertTrue(self.lock.exists())
+
+    def test_windows_clear_that_stays_busy_returns_busy_instead_of_failing(self):
+        write_lock(self.lock, DEAD_PID, age_seconds=3600)
+        observed = PB._lock_identity(self.lock)
+        unlink, _ = flaky_unlink(self.lock, 1000)
+        with mock.patch.object(PB, "_is_windows", lambda: True), \
+                mock.patch.object(PB, "LOCK_UNLINK_PAUSE_SECONDS", 0.001), \
+                mock.patch.object(Path, "unlink", unlink):
+            self.assertEqual(PB._clear_stale_lock(self.lock, observed), "busy")
+        self.assertFalse(self.guard.exists())
+
+    def test_release_that_gives_up_prints_one_plain_warning(self):
+        unlink, _ = flaky_unlink(self.lock, 1000)
+        err = io.StringIO()
+        with mock.patch.object(PB, "LOCK_UNLINK_PAUSE_SECONDS", 0.001), \
+                mock.patch.object(Path, "unlink", unlink), contextlib.redirect_stderr(err):
+            with mem.public_beta_mutation_lock(self.root, mem.MODE_STANDALONE):
+                pass
+        lines = [line for line in err.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("warning: could not remove the Memory lock file"))
+
+    def test_release_retries_a_busy_read_too(self):
+        real_read = Path.read_text
+        state = {"left": 2}
+
+        def read(path, *args, **kwargs):
+            if Path(path) == self.lock and state["left"] > 0:
+                state["left"] -= 1
+                raise PermissionError(13, "Permission denied")
+            return real_read(path, *args, **kwargs)
+
+        with mock.patch.object(PB, "LOCK_UNLINK_PAUSE_SECONDS", 0.001):
+            cm = mem.public_beta_mutation_lock(self.root, mem.MODE_STANDALONE)
+            cm.__enter__()
+            state["left"] = 2
+            with mock.patch.object(Path, "read_text", read):
+                cm.__exit__(None, None, None)
         self.assertFalse(self.lock.exists())
 
     def test_live_holder_is_waited_for_not_cleared(self):
@@ -355,7 +460,7 @@ class RegistryLockTests(unittest.TestCase):
                     pass
         self.assertFalse(self.lock.exists())
         unlink, _ = flaky_unlink(self.lock, 1000)
-        with mock.patch.object(install, "REGISTRY_UNLINK_PAUSE_SECONDS", 0.001):
+        with mock.patch.object(install, "REGISTRY_UNLINK_PAUSE_SECONDS", 0.001), contextlib.redirect_stderr(io.StringIO()):
             with mock.patch.object(Path, "unlink", unlink):
                 with self.assertRaises(ValueError):
                     with install._registry_lock(self.target):
@@ -369,6 +474,56 @@ class RegistryLockTests(unittest.TestCase):
             with mock.patch.object(Path, "unlink", unlink):
                 self.assertEqual(install._clear_stale_registry_lock(self.lock, observed), "cleared")
         self.assertEqual(state["calls"], 3)
+
+    def test_windows_busy_error_on_create_waits_and_retries(self):
+        opener, state = flaky_open(install, self.lock, 3)
+        with mock.patch.object(install, "_is_windows", lambda: True), mock.patch.object(install.os, "open", opener):
+            with install._registry_lock(self.target):
+                self.assertTrue(self.lock.exists())
+        self.assertEqual(state["calls"], 4)
+        self.assertFalse(self.lock.exists())
+
+    def test_windows_busy_error_reports_busy_at_the_deadline(self):
+        opener, _ = flaky_open(install, self.lock, 10 ** 6)
+        with mock.patch.object(install, "_is_windows", lambda: True), \
+                mock.patch.object(install, "REGISTRY_CLEAR_WAIT_SECONDS", 0.2), \
+                mock.patch.object(install.os, "open", opener):
+            with self.assertRaises(RuntimeError) as caught:
+                with install._registry_lock(self.target):
+                    pass
+        self.assertIn("busy", str(caught.exception))
+
+    def test_permission_error_is_still_a_hard_error_off_windows(self):
+        opener, state = flaky_open(install, self.lock, 10 ** 6)
+        with mock.patch.object(install, "_is_windows", lambda: False), mock.patch.object(install.os, "open", opener):
+            with self.assertRaises(RuntimeError) as caught:
+                with install._registry_lock(self.target):
+                    pass
+        self.assertIn("Could not acquire", str(caught.exception))
+        self.assertEqual(state["calls"], 1)
+
+    def test_windows_busy_guard_and_stuck_clear_report_busy(self):
+        write_lock(self.lock, DEAD_PID, age_seconds=3600)
+        observed = install._file_identity(self.lock)
+        opener, _ = flaky_open(install, self.guard, 1)
+        with mock.patch.object(install, "_is_windows", lambda: True), mock.patch.object(install.os, "open", opener):
+            self.assertEqual(install._clear_stale_registry_lock(self.lock, observed), "busy")
+        unlink, _ = flaky_unlink(self.lock, 1000)
+        with mock.patch.object(install, "_is_windows", lambda: True), \
+                mock.patch.object(install, "REGISTRY_UNLINK_PAUSE_SECONDS", 0.001), \
+                mock.patch.object(Path, "unlink", unlink):
+            self.assertEqual(install._clear_stale_registry_lock(self.lock, observed), "busy")
+
+    def test_release_that_gives_up_prints_one_plain_warning(self):
+        unlink, _ = flaky_unlink(self.lock, 1000)
+        err = io.StringIO()
+        with mock.patch.object(install, "REGISTRY_UNLINK_PAUSE_SECONDS", 0.001), \
+                mock.patch.object(Path, "unlink", unlink), contextlib.redirect_stderr(err):
+            with install._registry_lock(self.target):
+                pass
+        lines = [line for line in err.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("warning: could not remove the Memory lock file"))
 
     def test_unremovable_stale_lock_fails_with_plain_error(self):
         write_lock(self.lock, DEAD_PID, age_seconds=3600)

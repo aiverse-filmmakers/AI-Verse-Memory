@@ -372,22 +372,49 @@ def _registry_lock_is_stale(lock: Path) -> bool:
     return not _pid_alive(pid)
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _busy_error(exc: BaseException) -> bool:
+    """True if this error only means "another program has the file right now".
+
+    On Windows, creating, opening, reading or deleting a file that another
+    process has open or is deleting raises PermissionError (or an OSError with
+    winerror 5, 32 or 33). Elsewhere a PermissionError is a real problem.
+    """
+    if not _is_windows():
+        return False
+    return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in (5, 32, 33)
+
+
 def _release_token_file(path: Path, token: str) -> None:
-    """Remove a lock or guard file, but only if it still carries our token."""
-    if _read_json_object(path).get("token") != token:
-        return
-    # Runs in finally blocks. On Windows a file another program has open cannot
-    # be deleted for a moment: retry briefly, then give up quietly so the real
-    # error is never hidden.
+    """Remove a lock or guard file, but only if it still carries our token.
+
+    Runs in finally blocks: a busy file is retried briefly and then given up
+    with a one line warning, so the real error is never hidden.
+    """
     for attempt in range(REGISTRY_UNLINK_ATTEMPTS):
         try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("token") != token:
+                return
             path.unlink()
             return
         except FileNotFoundError:
             return
+        except ValueError:
+            return
         except OSError:
             if attempt + 1 < REGISTRY_UNLINK_ATTEMPTS:
                 time.sleep(REGISTRY_UNLINK_PAUSE_SECONDS)
+    try:
+        print(
+            f"warning: could not remove the Memory lock file {path}; it will be cleared later as stale.",
+            file=sys.stderr,
+        )
+    except Exception:  # noqa: BLE001 - a warning must never raise
+        pass
 
 
 def _try_take_registry_guard(guard: Path):
@@ -396,7 +423,13 @@ def _try_take_registry_guard(guard: Path):
     for _ in range(2):
         try:
             fd = os.open(str(guard), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
+        except OSError as exc:
+            if isinstance(exc, FileExistsError):
+                pass
+            elif _busy_error(exc):
+                return None
+            else:
+                raise
             seen = _file_identity(guard)
             stale = False
             if seen is not None:
@@ -411,6 +444,10 @@ def _try_take_registry_guard(guard: Path):
                     guard.unlink()
                 except FileNotFoundError:
                     pass
+                except OSError as exc:
+                    if _busy_error(exc):
+                        return None
+                    raise
                 continue
             return None
         try:
@@ -455,6 +492,8 @@ def _clear_stale_registry_lock(lock: Path, observed) -> str:
                 return "gone"
             except OSError as exc:
                 if attempt + 1 >= REGISTRY_UNLINK_ATTEMPTS:
+                    if _busy_error(exc):
+                        return "busy"
                     raise RuntimeError(f"Could not clear stale local extension registry lock: {lock}: {exc}") from exc
                 time.sleep(REGISTRY_UNLINK_PAUSE_SECONDS)
         return "cleared"
@@ -482,6 +521,13 @@ def _registry_lock(target: Path):
                     continue
             raise RuntimeError(f"Local extension registry is busy: {lock}") from exc
         except OSError as exc:
+            if _busy_error(exc):
+                # Windows: the lock file is open or being deleted by another
+                # process. Wait inside the deadline, then report busy.
+                if time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    continue
+                raise RuntimeError(f"Local extension registry is busy: {lock}") from exc
             raise RuntimeError(f"Could not acquire local extension registry lock: {exc}") from exc
     token = uuid.uuid4().hex
     try:
@@ -493,7 +539,7 @@ def _registry_lock(target: Path):
     except BaseException:
         try:
             lock.unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
         raise
     try:
