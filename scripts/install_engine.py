@@ -181,17 +181,60 @@ def source_copy(
         src = source_dir / relative
         if not src.exists():
             raise FileNotFoundError(f"Installer source missing: {src}")
-        shutil.copy2(src, destination)
+        _atomic_copy(src, destination)
         return
     url = f"{resolve_base_url()}/{relative}"
     with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310 - fixed trusted project URL
-        destination.write_bytes(response.read())
+        _atomic_write_bytes(destination, response.read())
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Replace a file in one step so a crash never leaves it half written.
+
+    The bytes go to a temporary file in the same folder, are flushed to disk,
+    then replace the target. An existing file keeps its permission bits.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        mode = 0o644
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        try:
+            os.chmod(temp_name, mode)
+        except OSError:
+            pass
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    finally:
+        try:
+            Path(temp_name).unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _atomic_copy(src: Path, destination: Path) -> None:
+    """Copy a file (with its permissions and times) so the destination is never half written."""
+    fd, temp_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=str(destination.parent))
+    os.close(fd)
+    try:
+        shutil.copy2(src, temp_name)
+        os.replace(temp_name, destination)
+    finally:
+        try:
+            Path(temp_name).unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _write_text_lf(path: Path, text: str) -> None:
     """Write UTF-8 text with LF line endings on every platform, so later hashes match."""
-    with open(path, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(text)
+    _atomic_write_bytes(path, text.encode("utf-8"))
 
 
 def replace_marker_block(path: Path, block: Optional[str], target_root: Optional[Path] = None) -> None:

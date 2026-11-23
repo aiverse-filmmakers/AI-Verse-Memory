@@ -11,6 +11,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import tempfile
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,33 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 VERSION = "0.3.0-beta.2.dev0"
 MODE_NATIVE = "ai-verse-os-v2"
 MODE_STANDALONE = "standalone"
+
+
+def safe_write_text(path: Path, text: str) -> None:
+    """Write a whole file so a crash never leaves it half written.
+
+    The text goes to a temporary file in the same folder, is flushed to disk,
+    and then replaces the target in one step. A reader sees either the old file
+    or the new one, never a mix.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        try:
+            os.chmod(temp_name, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    finally:
+        try:
+            Path(temp_name).unlink()
+        except FileNotFoundError:
+            pass
 
 MEMORY_TYPES = {
     "fact",
@@ -307,14 +335,14 @@ def ensure_layout(root: Optional[Path] = None, mode: Optional[str] = None) -> Di
     for key in ("home", "memories", "scenarios", "evidence", "state"):
         p[key].mkdir(parents=True, exist_ok=True)
     if not p["profile"].exists():
-        p["profile"].write_text(
+        safe_write_text(
+            p["profile"],
             "# Memory Profile\n\n"
             "> Stable, broadly useful context only. Keep volatile state in atomic memories or scenarios.\n\n"
             "## Identity and role\n\n"
             "## Stable preferences\n\n"
             "## Durable constraints\n\n"
             "## Long-term priorities\n",
-            encoding="utf-8",
         )
     return p
 
@@ -1080,7 +1108,7 @@ def write_atomic(
     body = f"# Memory\n\n{text}\n"
     if why.strip():
         body += f"\n# Why it matters\n\n{why.strip()}\n"
-    path.write_text(render_frontmatter(meta) + "\n\n" + body, encoding="utf-8")
+    safe_write_text(path, render_frontmatter(meta) + "\n\n" + body)
     rebuild(silent=True, root=root, mode=mode)
     return mem_id, path, True
 
@@ -1309,7 +1337,7 @@ def update_meta(path: Path, changes: Dict[str, str]) -> None:
         raise ValueError(f"Not an AI-Verse atomic memory: {path}")
     meta.update(changes)
     meta["updated_at"] = now_iso()
-    path.write_text(render_frontmatter(meta) + "\n\n" + body.strip() + "\n", encoding="utf-8")
+    safe_write_text(path, render_frontmatter(meta) + "\n\n" + body.strip() + "\n")
 
 
 def locate_memory(mem_id: str, root: Optional[Path] = None, mode: Optional[str] = None) -> Optional[Path]:
@@ -1445,7 +1473,7 @@ def discover(root: Path, output: Optional[Path], max_files: int) -> List[Tuple[P
     report = "\n".join(lines) + "\n"
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(report, encoding="utf-8")
+        safe_write_text(output, report)
         print(f"Discovery report: {output}")
     else:
         print(report)
@@ -1540,7 +1568,7 @@ def migrate_legacy(root: Path, apply: bool = False, source_root: Optional[Path] 
                 new_meta["source"] = f"legacy:{old_path.relative_to(root)}"
             created = new_meta.get("created_at") or now_iso()
             target = atomic_path(mem_id, created, mapped, root, mode)
-            target.write_text(render_frontmatter(new_meta) + "\n\n" + body.strip() + "\n", encoding="utf-8")
+            safe_write_text(target, render_frontmatter(new_meta) + "\n\n" + body.strip() + "\n")
             counts["copied"] += 1
             report_rows.append((display_source, "copied", relpath(target, root)))
         else:
@@ -1566,7 +1594,7 @@ def migrate_legacy(root: Path, apply: bool = False, source_root: Optional[Path] 
         "|---|---|---|",
     ]
     lines.extend(f"| `{src}` | {result} | `{note}` |" for src, result, note in report_rows)
-    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    safe_write_text(report_path, "\n".join(lines) + "\n")
     print(f"Legacy migration report: {relpath(report_path, root)}")
     print(json.dumps(counts, indent=2))
     return counts
@@ -1671,7 +1699,7 @@ def add_search_hooks(mem_id: str, hooks: str, root: Optional[Path] = None, mode:
     if len(tags) > 300:
         raise ValueError("Tags must stay under 300 characters")
     meta["tags"] = tags
-    path.write_text(render_frontmatter(meta) + "\n\n" + body.strip() + "\n", encoding="utf-8")
+    safe_write_text(path, render_frontmatter(meta) + "\n\n" + body.strip() + "\n")
     return tags
 
 
@@ -1790,7 +1818,7 @@ def migration_complete(summary: str, root: Optional[Path] = None, mode: Optional
         "summary": summary.strip() or "Initial historical-memory migration completed.",
     }
     p["migration"].parent.mkdir(parents=True, exist_ok=True)
-    p["migration"].write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    safe_write_text(p["migration"], json.dumps(payload, indent=2) + "\n")
     print(f"Migration marked complete: {relpath(p['migration'], root)}")
 
 
@@ -2009,4 +2037,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # This file is only the engine body. The supported entry point is memory.py,
+    # which loads the hardened writers over it. Running this file directly would
+    # use the older, less safe versions, so refuse.
+    print(
+        "error: memory_engine.py cannot be run directly. Use scripts/memory.py "
+        "(or the memory.py in your AI-Verse Memory install) instead.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
