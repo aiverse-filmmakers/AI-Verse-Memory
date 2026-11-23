@@ -12,7 +12,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -326,51 +328,164 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+REGISTRY_LOCK_STALE_SECONDS = 600
+REGISTRY_GUARD_STALE_SECONDS = 30
+# How long to wait for another installer that is clearing a stale lock.
+REGISTRY_CLEAR_WAIT_SECONDS = 10
+
+
+def _read_json_object(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _file_identity(path: Path):
+    """Identify one specific lock file: which file it is and which token it carries."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (
+        int(getattr(stat, "st_ino", 0) or 0),
+        int(getattr(stat, "st_mtime_ns", 0) or 0),
+        int(stat.st_size),
+        str(_read_json_object(path).get("token") or ""),
+    )
+
+
 def _registry_lock_is_stale(lock: Path) -> bool:
     try:
-        age = max(0.0, __import__("time").time() - lock.stat().st_mtime)
+        age = max(0.0, time.time() - lock.stat().st_mtime)
     except OSError:
         return False
-    if age < 600:
+    if age < REGISTRY_LOCK_STALE_SECONDS:
         return False
     try:
-        payload = json.loads(lock.read_text(encoding="utf-8"))
-        pid = int(payload.get("pid") or 0)
-    except Exception:
+        pid = int(_read_json_object(lock).get("pid") or 0)
+    except (TypeError, ValueError):
         pid = 0
     return not _pid_alive(pid)
+
+
+def _release_token_file(path: Path, token: str) -> None:
+    """Remove a lock or guard file, but only if it still carries our token."""
+    if _read_json_object(path).get("token") != token:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _try_take_registry_guard(guard: Path):
+    """Try to take the exclusive clearing guard. Return our token, or None if another installer holds it."""
+    token = uuid.uuid4().hex
+    for _ in range(2):
+        try:
+            fd = os.open(str(guard), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            seen = _file_identity(guard)
+            stale = False
+            if seen is not None:
+                try:
+                    old = time.time() - guard.stat().st_mtime >= REGISTRY_GUARD_STALE_SECONDS
+                    pid = int(_read_json_object(guard).get("pid") or 0)
+                except (OSError, TypeError, ValueError):
+                    old, pid = False, 0
+                stale = old and not (pid > 0 and _pid_alive(pid))
+            if stale and _file_identity(guard) == seen:
+                try:
+                    guard.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            return None
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump({"pid": os.getpid(), "token": token}, handle)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            try:
+                guard.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        return token
+    return None
+
+
+def _clear_stale_registry_lock(lock: Path, observed) -> str:
+    """Clear one stale lock, one installer at a time.
+
+    The installer takes the exclusive guard `<lock>.clearing`, looks at the lock
+    again, and clears it only if it is the same file that was judged stale and
+    it is still stale. Nothing is ever put back. Returns "cleared", "gone",
+    "fresh" or "busy".
+    """
+    guard = lock.with_name(lock.name + ".clearing")
+    guard_token = _try_take_registry_guard(guard)
+    if guard_token is None:
+        return "busy"
+    try:
+        current = _file_identity(lock)
+        if current is None:
+            return "gone"
+        if current != observed or not _registry_lock_is_stale(lock):
+            return "fresh"
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            return "gone"
+        except OSError as exc:
+            raise RuntimeError(f"Could not clear stale local extension registry lock: {lock}: {exc}") from exc
+        return "cleared"
+    finally:
+        _release_token_file(guard, guard_token)
 
 
 @contextmanager
 def _registry_lock(target: Path):
     extensions = _ensure_extension_dir(target)
     lock = extensions / "registry.json.lock"
-    for attempt in range(2):
+    deadline = time.monotonic() + REGISTRY_CLEAR_WAIT_SECONDS
+    while True:
         try:
             fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             break
         except FileExistsError as exc:
-            if attempt == 0 and _registry_lock_is_stale(lock):
-                try:
-                    lock.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
+            observed = _file_identity(lock)
+            if observed is not None and _registry_lock_is_stale(lock):
+                outcome = _clear_stale_registry_lock(lock, observed)
+                if outcome in ("cleared", "gone"):
+                    continue
+                if outcome == "busy" and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    continue
             raise RuntimeError(f"Local extension registry is busy: {lock}") from exc
         except OSError as exc:
             raise RuntimeError(f"Could not acquire local extension registry lock: {exc}") from exc
+    token = uuid.uuid4().hex
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump({"extension_id": "ai-verse-memory", "pid": os.getpid()}, handle)
+            json.dump({"extension_id": "ai-verse-memory", "pid": os.getpid(), "token": token}, handle)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        yield
-    finally:
+    except BaseException:
         try:
             lock.unlink()
         except FileNotFoundError:
             pass
+        raise
+    try:
+        yield
+    finally:
+        _release_token_file(lock, token)
 
 
 def _read_local_registry(target: Path) -> tuple[dict, Optional[str]]:

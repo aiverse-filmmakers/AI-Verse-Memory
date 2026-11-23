@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,9 @@ PUBLIC_BETA_SCHEMA = 1
 LOCK_STALE_SECONDS = 600
 LOCK_DEAD_PROCESS_GRACE_SECONDS = 2
 LOCK_WAIT_SECONDS = 120
+# The clearing guard is only held for a few milliseconds. One that is older than
+# this and whose owner is gone was left behind by a crash.
+LOCK_GUARD_STALE_SECONDS = 30
 _LOCK_LOCAL = threading.local()
 _LOCK_PROCESS_GUARD = threading.Lock()
 _LOCK_PROCESS_LOCKS: Dict[str, threading.Lock] = {}
@@ -313,7 +317,7 @@ def _lock_progress_token(lock: Path):
     holder = ""
     try:
         payload = json.loads(lock.read_text(encoding="utf-8"))
-        holder = str(payload.get("holder") or "")
+        holder = str(payload.get("token") or payload.get("holder") or "")
     except Exception:
         pass
 
@@ -335,6 +339,122 @@ def _process_mutation_lock(key: str) -> threading.Lock:
         return lock
 
 
+def _read_lock_payload(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _lock_identity(lock: Path):
+    """Identify one specific lock file: which file it is and which token it carries."""
+    try:
+        stat = lock.stat()
+    except OSError:
+        return None
+    token = str(_read_lock_payload(lock).get("token") or "")
+    return (
+        int(getattr(stat, "st_ino", 0) or 0),
+        int(getattr(stat, "st_mtime_ns", 0) or 0),
+        int(stat.st_size),
+        token,
+    )
+
+
+def _release_lock_file(path: Path, token: str) -> None:
+    """Remove a lock or guard file, but only if it still carries our token.
+
+    A file with someone else's token (or no readable token) is never ours to
+    delete.
+    """
+    if _read_lock_payload(path).get("token") != token:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _guard_is_stale(guard: Path) -> bool:
+    try:
+        age = max(0.0, time.time() - guard.stat().st_mtime)
+    except OSError:
+        return False
+    if age < LOCK_GUARD_STALE_SECONDS:
+        return False
+    try:
+        pid = int(_read_lock_payload(guard).get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    return not (pid > 0 and _pid_alive(pid))
+
+
+def _try_take_guard(guard: Path):
+    """Try to take the exclusive clearing guard. Return our token, or None if another waiter holds it."""
+    token = uuid.uuid4().hex
+    for _ in range(2):
+        try:
+            fd = os.open(str(guard), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # A guard abandoned by a crashed waiter would block clearing for
+            # ever. Remove it only if it is still the same abandoned file.
+            seen = _lock_identity(guard)
+            if seen is not None and _guard_is_stale(guard) and _lock_identity(guard) == seen:
+                try:
+                    guard.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            return None
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump({"pid": os.getpid(), "token": token, "created_at": _now_iso()}, handle)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            try:
+                guard.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        return token
+    return None
+
+
+def _clear_stale_lock(lock: Path, observed) -> str:
+    """Clear one stale lock. Only one waiter at a time may do this.
+
+    The waiter first takes the exclusive guard file `<lock>.clearing`. Under the
+    guard it looks at the lock again and clears it only if it is the same file
+    that was judged stale and it is still stale. A lock that was freed or
+    replaced in the meantime is left alone, and nothing is ever put back.
+
+    Returns "cleared", "gone", "fresh" (a live or new lock is there), or "busy"
+    (another waiter is clearing right now).
+    """
+    guard = lock.with_name(lock.name + ".clearing")
+    guard_token = _try_take_guard(guard)
+    if guard_token is None:
+        return "busy"
+    try:
+        current = _lock_identity(lock)
+        if current is None:
+            return "gone"
+        if current != observed or not _lock_is_stale(lock):
+            return "fresh"
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            return "gone"
+        except OSError as exc:
+            raise RuntimeError(f"Could not clear stale Memory mutation lock: {lock}: {exc}") from exc
+        return "cleared"
+    finally:
+        _release_lock_file(guard, guard_token)
+
+
 @contextmanager
 def _mutation_lock(engine, root: Path, mode: str):
     state = _state_dir(engine, root, mode)
@@ -350,8 +470,7 @@ def _mutation_lock(engine, root: Path, mode: str):
         return
 
     # Same-process writers serialize without repeatedly polling the filesystem
-    # lock. The durable file lock remains the cross-process authority and keeps
-    # all existing stale-owner/recovery semantics unchanged.
+    # lock. The durable file lock remains the cross-process authority.
     process_lock = _process_mutation_lock(key)
     process_lock.acquire()
     try:
@@ -362,14 +481,15 @@ def _mutation_lock(engine, root: Path, mode: str):
                 fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 break
             except FileExistsError as exc:
-                if _lock_is_stale(lock):
-                    try:
-                        lock.unlink()
-                    except FileNotFoundError:
-                        pass
-                    observed_holder = None
-                    deadline = time.monotonic() + LOCK_WAIT_SECONDS
-                    continue
+                observed = _lock_identity(lock)
+                if observed is not None and _lock_is_stale(lock):
+                    outcome = _clear_stale_lock(lock, observed)
+                    if outcome in ("cleared", "gone"):
+                        observed_holder = None
+                        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+                        continue
+                    # "fresh": someone else took over. "busy": another waiter
+                    # is clearing. Either way look again after a short pause.
 
                 progress = _lock_progress_token(lock)
                 if progress is not None and progress != observed_holder:
@@ -382,16 +502,14 @@ def _mutation_lock(engine, root: Path, mode: str):
             except OSError as exc:
                 raise RuntimeError(f"Could not acquire Memory mutation lock: {exc}") from exc
 
+        token = uuid.uuid4().hex
         try:
-            holder = hashlib.sha256(
-                f"{os.getpid()}:{threading.get_ident()}:{time.monotonic_ns()}".encode("utf-8")
-            ).hexdigest()[:20]
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump(
                     {
                         "schema_version": PUBLIC_BETA_SCHEMA,
                         "pid": os.getpid(),
-                        "holder": holder,
+                        "token": token,
                         "created_at": _now_iso(),
                     },
                     handle,
@@ -399,15 +517,20 @@ def _mutation_lock(engine, root: Path, mode: str):
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
+        except BaseException:
+            # The file was created by us a moment ago and carries no token yet.
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        try:
             counts[key] = 1
             _recover_transactions(engine, root, mode)
             yield
         finally:
             counts.pop(key, None)
-            try:
-                lock.unlink()
-            except FileNotFoundError:
-                pass
+            _release_lock_file(lock, token)
     finally:
         process_lock.release()
 
